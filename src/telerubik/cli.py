@@ -16,6 +16,10 @@ def _build_parser():
     parser.add_argument("command", choices=("check", "status", "run"))
     return parser
 
+def _chat_ref(value: str):
+    """Telethon expects numeric chat IDs as integers, not username-like strings."""
+    return int(value) if value.lstrip("-").isdigit() else value
+
 async def _run(settings: Settings, queue: TransferQueue) -> None:
     try: from telethon import TelegramClient
     except ImportError as exc: raise RuntimeError("Telethon is missing; install requirements.txt") from exc
@@ -27,7 +31,7 @@ async def _run(settings: Settings, queue: TransferQueue) -> None:
     if not settings.dry_run: await sender.start()
 
     async def downloader(job, directory: Path):
-        entity = await client.get_entity(job.source_chat)
+        entity = await client.get_entity(_chat_ref(job.source_chat))
         message = await client.get_messages(entity, ids=job.message_id)
         if not message or not message.media: return None
         name = safe_filename(getattr(getattr(message, "file", None), "name", None) or job.filename)
@@ -39,13 +43,14 @@ async def _run(settings: Settings, queue: TransferQueue) -> None:
     try:
         while True:
             for chat in settings.telegram_source_chats:
-                async for message in client.iter_messages(chat, limit=settings.lookback_limit):
+                chat_ref = _chat_ref(chat)
+                async for message in client.iter_messages(chat_ref, limit=settings.lookback_limit):
                     if not message.media or not getattr(message, "id", None): continue
                     if settings.allowed_user_ids and getattr(message, "sender_id", None) not in settings.allowed_user_ids: continue
                     size = getattr(getattr(message, "file", None), "size", None)
                     if size is not None and size > settings.max_file_size_bytes: continue
                     name = safe_filename(getattr(getattr(message, "file", None), "name", None) or f"telegram-{message.id}")
-                    queue.enqueue(str(chat), int(message.id), name, getattr(message, "message", "") or "", {"source_chat": str(chat), "message_id": int(message.id)})
+                    queue.enqueue(str(chat_ref), int(message.id), name, getattr(message, "message", "") or "", {"source_chat": str(chat_ref), "message_id": int(message.id)})
             while await engine.process_one(downloader, upload): pass
             await asyncio.sleep(settings.poll_seconds)
     finally:
