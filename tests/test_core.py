@@ -2,9 +2,12 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from telerubik.adapters import RubikaSender
+from telerubik.cli import _message_kind
 from telerubik.config import ConfigurationError, Settings
 from telerubik.engine import TransferEngine
-from telerubik.queue import TransferQueue
+from telerubik.queue import Job, TransferQueue
 from telerubik.security import safe_filename, validate_file_size
 
 BASE_ENV = {"TELEGRAM_API_ID":"12345", "TELEGRAM_API_HASH":"fake-hash", "TELEGRAM_SOURCE_CHATS":"@allowed_channel, -100123", "RUBIKA_BOT_TOKEN":"placeholder-token", "RUBIKA_DESTINATION_GUID":"placeholder-guid"}
@@ -26,6 +29,16 @@ class SecurityTests(unittest.TestCase):
         self.assertTrue(settings.dry_run)
         self.assertEqual(settings.telegram_source_chats, ("@allowed_channel", "-100123"))
         self.assertEqual(settings.max_retries, 3)
+
+class MessageClassificationTests(unittest.TestCase):
+    def test_text_message_is_transferable_without_media(self):
+        self.assertEqual(_message_kind(SimpleNamespace(media=None, file=None, message="hello")), "text")
+    def test_downloadable_media_is_classified_as_media(self):
+        self.assertEqual(_message_kind(SimpleNamespace(media=object(), file=object(), message="caption")), "media")
+    def test_non_downloadable_preview_falls_back_to_its_text(self):
+        self.assertEqual(_message_kind(SimpleNamespace(media=object(), file=None, message="article link")), "text")
+    def test_empty_unsupported_media_is_skipped(self):
+        self.assertIsNone(_message_kind(SimpleNamespace(media=object(), file=None, message="")))
 
 class QueueTests(unittest.TestCase):
     def test_enqueue_is_idempotent_and_transitions_are_durable(self):
@@ -113,5 +126,35 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(queue.stats()["failed"], 1)
             self.assertTrue(outside.exists())
         with tempfile.TemporaryDirectory() as tmp: asyncio.run(scenario(tmp))
+
+class AdapterTests(unittest.TestCase):
+    def test_text_job_routes_to_send_message(self):
+        async def scenario():
+            class FakeClient:
+                def __init__(self): self.calls = []
+                async def send_message(self, *args): self.calls.append(("message", args))
+            fake = FakeClient()
+            sender = RubikaSender("token", "destination")
+            sender.client = fake
+            job = Job(1, "chat", 1, "telegram-1", "hello", "processing", 1, {"kind":"text"})
+            await sender.send_job(None, "hello", job)
+            self.assertEqual(fake.calls, [("message", ("destination", "hello"))])
+        asyncio.run(scenario())
+
+    def test_media_jobs_use_documented_rubpy_type_values(self):
+        async def scenario():
+            class FakeClient:
+                def __init__(self): self.calls = []
+                async def send_file(self, *args, **kwargs): self.calls.append((args, kwargs))
+            fake = FakeClient()
+            sender = RubikaSender("token", "destination")
+            sender.client = fake
+            path = Path("sample.bin")
+            for media_type, expected in (("photo", "Image"), ("video", "Video"), ("file", "File")):
+                job = Job(1, "chat", 1, path.name, "caption", "processing", 1, {"kind":"media", "media_type":media_type})
+                await sender.send_job(path, "caption", job)
+                self.assertEqual(fake.calls[-1][0], ("destination",))
+                self.assertEqual(fake.calls[-1][1], {"file":str(path), "text":"caption", "file_name":path.name, "type":expected})
+        asyncio.run(scenario())
 
 if __name__ == "__main__": unittest.main()
