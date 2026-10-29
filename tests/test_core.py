@@ -29,6 +29,12 @@ class SecurityTests(unittest.TestCase):
         self.assertTrue(settings.dry_run)
         self.assertEqual(settings.telegram_source_chats, ("@allowed_channel", "-100123"))
         self.assertEqual(settings.max_retries, 3)
+    def test_config_can_explicitly_disable_dry_run(self):
+        settings = Settings.from_env({**BASE_ENV, "TELERUBIK_DRY_RUN": "false"})
+        self.assertFalse(settings.dry_run)
+    def test_config_rejects_ambiguous_dry_run_value(self):
+        with self.assertRaisesRegex(ConfigurationError, "TELERUBIK_DRY_RUN"):
+            Settings.from_env({**BASE_ENV, "TELERUBIK_DRY_RUN": "sometimes"})
 
 class MessageClassificationTests(unittest.TestCase):
     def test_text_message_is_transferable_without_media(self):
