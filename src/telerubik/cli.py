@@ -20,6 +20,17 @@ def _chat_ref(value: str):
     """Telethon expects numeric chat IDs as integers, not username-like strings."""
     return int(value) if value.lstrip("-").isdigit() else value
 
+def _message_kind(message) -> str | None:
+    """Classify a source post without queueing unsupported media as a doomed file job."""
+    has_media = bool(getattr(message, "media", None))
+    file_info = getattr(message, "file", None)
+    text = getattr(message, "message", "") or ""
+    if has_media and file_info is not None:
+        return "media"
+    if text.strip():
+        return "text"
+    return None
+
 def _media_type(message) -> str:
     if getattr(message, "photo", None):
         return "photo"
@@ -54,7 +65,7 @@ async def _run(settings: Settings, queue: TransferQueue) -> None:
             return None
         entity = await client.get_entity(_chat_ref(job.source_chat))
         message = await client.get_messages(entity, ids=job.message_id)
-        if not message or not message.media:
+        if not message or not message.media or getattr(message, "file", None) is None:
             return None
         name = safe_filename(getattr(getattr(message, "file", None), "name", None) or job.filename)
         result = await client.download_media(message, file=str(directory / f"{job.id}-{name}"))
@@ -74,13 +85,14 @@ async def _run(settings: Settings, queue: TransferQueue) -> None:
                     if not getattr(message, "id", None):
                         continue
                     text = getattr(message, "message", "") or ""
-                    has_media = bool(getattr(message, "media", None))
-                    if not has_media and not text.strip():
+                    kind = _message_kind(message)
+                    if kind is None:
+                        logging.debug("Skipping unsupported empty media chat=%s message_id=%s", chat_ref, message.id)
                         continue
                     if settings.allowed_user_ids and getattr(message, "sender_id", None) not in settings.allowed_user_ids:
                         continue
-                    media_type = _media_type(message) if has_media else "text"
-                    size = getattr(getattr(message, "file", None), "size", None) if has_media else None
+                    media_type = _media_type(message) if kind == "media" else "text"
+                    size = getattr(getattr(message, "file", None), "size", None) if kind == "media" else None
                     if size is not None and size > settings.max_file_size_bytes:
                         logging.warning("Skipping oversized source message chat=%s message_id=%s size=%s", chat_ref, message.id, size)
                         continue
@@ -89,7 +101,7 @@ async def _run(settings: Settings, queue: TransferQueue) -> None:
                     payload = {
                         "source_chat": str(chat_ref),
                         "message_id": int(message.id),
-                        "kind": "media" if has_media else "text",
+                        "kind": kind,
                         "media_type": media_type,
                         "grouped_id": getattr(message, "grouped_id", None),
                     }
