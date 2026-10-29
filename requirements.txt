@@ -1,0 +1,3 @@
+Telethon==1.42.0
+rubpy==7.3.5
+python-dotenv==1.1.1
