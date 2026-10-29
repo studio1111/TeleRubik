@@ -22,12 +22,17 @@ class TransferEngine:
         if job is None:
             return False
         path: Path | None = None
+        kind = job.payload.get("kind", "media")
+        log.info(
+            "Processing job=%s source=%s message_id=%s kind=%s attempt=%s/%s",
+            job.id, job.source_chat, job.message_id, kind, job.attempts, self.max_retries,
+        )
         try:
-            kind = job.payload.get("kind", "media")
             if kind == "text":
                 if not job.caption.strip():
                     raise RuntimeError("Text job has no text content")
             else:
+                log.info("Downloading media for job=%s filename=%s", job.id, safe_filename(job.filename))
                 downloaded = await downloader(job, self.download_dir)
                 if downloaded is None:
                     raise RuntimeError("Source message has no downloadable file")
@@ -40,6 +45,7 @@ class TransferEngine:
                 size = path.stat().st_size
                 if not validate_file_size(size, self.max_file_size_bytes):
                     raise RuntimeError("File size exceeds configured limit or is invalid")
+                log.info("Download validated for job=%s bytes=%s", job.id, size)
 
             if self.dry_run:
                 if path is None:
@@ -52,12 +58,17 @@ class TransferEngine:
                 self.queue.defer(job.id)
                 return False
 
+            log.info("Sending job=%s to configured Rubika destination", job.id)
             await sender(path, job.caption, job)
             self.queue.complete(job.id)
+            log.info("Transfer completed job=%s source=%s message_id=%s", job.id, job.source_chat, job.message_id)
             return True
         except Exception as exc:
             status = self.queue.retry_or_fail(job.id, self.max_retries, f"{type(exc).__name__}: {exc}")
-            log.warning("Transfer job %s %s: %s", job.id, status, type(exc).__name__)
+            log.warning(
+                "Transfer job=%s source=%s message_id=%s status=%s error_type=%s detail=%s",
+                job.id, job.source_chat, job.message_id, status, type(exc).__name__, str(exc)[:300],
+            )
             if status == "pending":
                 await asyncio.sleep(self.retry_base_seconds * min(2 ** max(0, job.attempts - 1), 16))
             return True
@@ -66,5 +77,6 @@ class TransferEngine:
                 try:
                     if self.download_dir.resolve() in path.parents and path.is_file():
                         path.unlink()
+                        log.debug("Removed temporary file for job=%s", job.id)
                 except OSError:
                     log.warning("Could not remove temporary file for job %s", job.id)
