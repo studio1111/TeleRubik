@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{ name = "studio1111" }]
-dependencies = ["Telethon==1.42.0", "rubpy==7.3.5", "python-dotenv==1.2.2"]
+dependencies = ["Telethon==1.45.0", "rubpy==7.3.5", "python-dotenv==1.2.2"]
 
 [project.scripts]
 telerubik = "telerubik.cli:main"
