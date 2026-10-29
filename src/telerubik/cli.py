@@ -21,6 +21,9 @@ def _chat_ref(value: str):
     return int(value) if value.lstrip("-").isdigit() else value
 
 async def _run(settings: Settings, queue: TransferQueue) -> None:
+    recovered = queue.recover_processing()
+    if recovered:
+        logging.warning("Recovered %s interrupted queue job(s)", recovered)
     try: from telethon import TelegramClient
     except ImportError as exc: raise RuntimeError("Telethon is missing; install requirements.txt") from exc
     settings.telegram_session_path.parent.mkdir(parents=True, exist_ok=True)
