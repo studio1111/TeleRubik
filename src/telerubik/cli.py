@@ -44,6 +44,19 @@ def _media_type(message) -> str:
         return "video"
     return "file"
 
+async def _iter_source_messages(client, chat_ref: str, cursor: int, lookback_limit: int):
+    """Stream incremental history; only materialize the bounded first-run window."""
+    if cursor:
+        async for message in client.iter_messages(chat_ref, min_id=cursor, reverse=True):
+            yield message
+        return
+
+    # Telethon's initial history is newest-first. The initial window is bounded,
+    # so reversing this small batch preserves oldest-first queue order safely.
+    messages = [message async for message in client.iter_messages(chat_ref, limit=lookback_limit)]
+    for message in reversed(messages):
+        yield message
+
 async def _run(settings: Settings, queue: TransferQueue) -> None:
     recovered = queue.recover_processing()
     if recovered:
@@ -98,16 +111,9 @@ async def _run(settings: Settings, queue: TransferQueue) -> None:
                     chat_ref,
                     "new messages after saved cursor" if cursor else f"initial history limit={settings.lookback_limit}",
                 )
-                if cursor:
-                    # Catch every new message since the last completed scan, even after long downtime.
-                    messages = [message async for message in client.iter_messages(chat_ref, min_id=cursor, reverse=True)]
-                else:
-                    # On first run, limit the initial import to the configured recent-history window.
-                    messages = [message async for message in client.iter_messages(chat_ref, limit=settings.lookback_limit)]
-                    messages.reverse()  # Initial Telethon batch is newest-first.
                 highest_seen = cursor
                 scanned = queued = duplicates = skipped = 0
-                for message in messages:
+                async for message in _iter_source_messages(client, chat_ref, cursor, settings.lookback_limit):
                     scanned += 1
                     message_id = getattr(message, "id", None)
                     if message_id:
