@@ -1,7 +1,7 @@
 # TeleRubik design
 
 ## Goal
-Move media from Telegram chats the operator is authorized to read into one configured Rubika destination, with durable local state and conservative handling of secrets and files.
+Move text posts and supported downloadable media from Telegram chats the operator is authorized to read into one configured Rubika destination, with durable local state and conservative handling of secrets and files.
 
 ## Flow
 Telegram client (Telethon) -> source chat/user filters -> SQLite idempotent queue -> bounded download directory -> path/size checks -> Rubpy sender -> queue completion. Failures retry with bounded exponential backoff and eventually become failed.
@@ -22,4 +22,4 @@ Telegram client (Telethon) -> source chat/user filters -> SQLite idempotent queu
 - SQLite is local-first; Supabase is not required and no remote database is provisioned automatically.
 
 ## Known integration risk
-Rubpy changes independently. Verify BotClient.send_document argument compatibility against the pinned version and test with a private destination before production use. The adapter raises an explicit error if the method is absent. Do not turn off dry-run until upload behavior is verified.
+Rubpy changes independently. The adapter targets the documented BotClient.send_message and BotClient.send_file API in pinned Rubpy 7.3.5. Mocked adapter tests and CI do not prove authenticated network delivery; a controlled private-destination test is still required. Queue delivery is at-least-once: a crash after remote acceptance but before local completion can produce a duplicate on restart. Telegram albums are currently delivered as separate messages/files, and formatting/entities are not fully preserved. Keep dry-run enabled until private-destination testing is deliberately approved.
