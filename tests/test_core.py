@@ -118,7 +118,7 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(list(root.iterdir()), [])
         with tempfile.TemporaryDirectory() as tmp: asyncio.run(scenario(tmp))
 
-    def test_text_job_sends_without_downloading_media(self):
+    def test_text_job_sends_without_downloading_media_and_logs_completion(self):
         async def scenario(tmp):
             queue = TransferQueue(Path(tmp) / "queue.sqlite3")
             queue.enqueue("chat", 10, "telegram-10", "plain text", {"kind":"text"})
@@ -126,9 +126,13 @@ class EngineTests(unittest.TestCase):
             sent = []
             async def send(path, caption, job): sent.append((path, caption, job.payload["kind"]))
             engine = TransferEngine(queue, Path(tmp) / "downloads", 100, 1, 1, dry_run=False)
-            self.assertTrue(await engine.process_one(download, send))
+            with self.assertLogs("telerubik.engine", level="INFO") as captured:
+                self.assertTrue(await engine.process_one(download, send))
             self.assertEqual(sent, [(None, "plain text", "text")])
             self.assertEqual(queue.stats()["completed"], 1)
+            self.assertTrue(any("Processing job=" in line for line in captured.output))
+            self.assertTrue(any("Sending job=" in line for line in captured.output))
+            self.assertTrue(any("Transfer completed" in line for line in captured.output))
         with tempfile.TemporaryDirectory() as tmp: asyncio.run(scenario(tmp))
 
     def test_rejects_download_path_outside_configured_directory(self):
