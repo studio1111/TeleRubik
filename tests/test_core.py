@@ -77,6 +77,18 @@ class QueueTests(unittest.TestCase):
             job = queue.next_pending()
             self.assertEqual(queue.retry_or_fail(job.id, 1, "permanent"), "failed")
             self.assertEqual(queue.stats()["failed"], 1)
+    def test_source_cursor_defaults_to_zero_and_advances_monotonically(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = TransferQueue(Path(tmp) / "state.sqlite3")
+            self.assertEqual(queue.get_cursor("@channel"), 0)
+            queue.set_cursor("@channel", 12)
+            queue.set_cursor("@channel", 9)
+            self.assertEqual(queue.get_cursor("@channel"), 12)
+    def test_source_cursor_rejects_negative_ids(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = TransferQueue(Path(tmp) / "state.sqlite3")
+            with self.assertRaises(ValueError):
+                queue.set_cursor("@channel", -1)
     def test_defer_returns_claimed_job_to_pending(self):
         with tempfile.TemporaryDirectory() as tmp:
             queue = TransferQueue(Path(tmp) / "state.sqlite3")
