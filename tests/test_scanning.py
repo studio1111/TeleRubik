@@ -38,6 +38,31 @@ class SourceScanningTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_incremental_scan_yields_before_consuming_the_full_backlog(self):
+        async def scenario():
+            consumed = []
+
+            class LazyClient:
+                def iter_messages(self, chat_ref, **kwargs):
+                    async def generate():
+                        for value in (21, 22, 23):
+                            consumed.append(value)
+                            yield SimpleNamespace(id=value)
+
+                    return generate()
+
+            iterator = _iter_source_messages(
+                LazyClient(), "@source", cursor=20, lookback_limit=25
+            )
+            first = await anext(iterator)
+            self.assertEqual(first.id, 21)
+            self.assertEqual(consumed, [21])
+            second = await anext(iterator)
+            self.assertEqual(second.id, 22)
+            self.assertEqual(consumed, [21, 22])
+
+        asyncio.run(scenario())
+
     def test_initial_scan_is_bounded_and_oldest_first(self):
         async def scenario():
             messages = [SimpleNamespace(id=value) for value in (13, 12, 11)]
