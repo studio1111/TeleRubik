@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+*.session
+*.session-journal
+*.rbs
+*.sqlite3
+*.db
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+downloads/
+dist/
+build/
+*.egg-info/
