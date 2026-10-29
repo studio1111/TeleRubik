@@ -12,7 +12,7 @@ from .queue import TransferQueue
 from .security import safe_filename
 
 def _build_parser():
-    parser = argparse.ArgumentParser(prog="telerubik", description="Transfer authorized Telegram media to Rubika.")
+    parser = argparse.ArgumentParser(prog="telerubik", description="Transfer authorized Telegram posts and media to Rubika.")
     parser.add_argument("command", choices=("check", "status", "run"))
     return parser
 
@@ -20,41 +20,86 @@ def _chat_ref(value: str):
     """Telethon expects numeric chat IDs as integers, not username-like strings."""
     return int(value) if value.lstrip("-").isdigit() else value
 
+def _media_type(message) -> str:
+    if getattr(message, "photo", None):
+        return "photo"
+    if getattr(message, "video", None):
+        return "video"
+    file_info = getattr(message, "file", None)
+    mime = (getattr(file_info, "mime_type", None) or "").lower()
+    if mime.startswith("image/"):
+        return "photo"
+    if mime.startswith("video/"):
+        return "video"
+    return "file"
+
 async def _run(settings: Settings, queue: TransferQueue) -> None:
     recovered = queue.recover_processing()
     if recovered:
         logging.warning("Recovered %s interrupted queue job(s)", recovered)
-    try: from telethon import TelegramClient
-    except ImportError as exc: raise RuntimeError("Telethon is missing; install requirements.txt") from exc
+    try:
+        from telethon import TelegramClient
+    except ImportError as exc:
+        raise RuntimeError("Telethon is missing; install requirements.txt") from exc
     settings.telegram_session_path.parent.mkdir(parents=True, exist_ok=True)
     settings.download_dir.mkdir(parents=True, exist_ok=True)
     client = TelegramClient(str(settings.telegram_session_path), settings.telegram_api_id, settings.telegram_api_hash)
     sender = RubikaSender(settings.rubika_bot_token, settings.rubika_destination_guid)
     await client.start()
-    if not settings.dry_run: await sender.start()
+    if not settings.dry_run:
+        await sender.start()
 
     async def downloader(job, directory: Path):
+        if job.payload.get("kind") == "text":
+            return None
         entity = await client.get_entity(_chat_ref(job.source_chat))
         message = await client.get_messages(entity, ids=job.message_id)
-        if not message or not message.media: return None
+        if not message or not message.media:
+            return None
         name = safe_filename(getattr(getattr(message, "file", None), "name", None) or job.filename)
         result = await client.download_media(message, file=str(directory / f"{job.id}-{name}"))
         return Path(result) if result else None
 
-    async def upload(path: Path, caption: str): await sender.send_document(path, caption)
+    async def upload(path: Path | None, caption: str, job):
+        await sender.send_job(path, caption, job)
+
     engine = TransferEngine(queue, settings.download_dir, settings.max_file_size_bytes, settings.max_retries, settings.retry_base_seconds, settings.dry_run)
     try:
         while True:
             for chat in settings.telegram_source_chats:
                 chat_ref = _chat_ref(chat)
-                async for message in client.iter_messages(chat_ref, limit=settings.lookback_limit):
-                    if not message.media or not getattr(message, "id", None): continue
-                    if settings.allowed_user_ids and getattr(message, "sender_id", None) not in settings.allowed_user_ids: continue
-                    size = getattr(getattr(message, "file", None), "size", None)
-                    if size is not None and size > settings.max_file_size_bytes: continue
-                    name = safe_filename(getattr(getattr(message, "file", None), "name", None) or f"telegram-{message.id}")
-                    queue.enqueue(str(chat_ref), int(message.id), name, getattr(message, "message", "") or "", {"source_chat": str(chat_ref), "message_id": int(message.id)})
-            while await engine.process_one(downloader, upload): pass
+                messages = [message async for message in client.iter_messages(chat_ref, limit=settings.lookback_limit)]
+                # Telethon iter_messages yields newest first. Enqueue oldest first to preserve chronology.
+                for message in reversed(messages):
+                    if not getattr(message, "id", None):
+                        continue
+                    text = getattr(message, "message", "") or ""
+                    has_media = bool(getattr(message, "media", None))
+                    if not has_media and not text.strip():
+                        continue
+                    if settings.allowed_user_ids and getattr(message, "sender_id", None) not in settings.allowed_user_ids:
+                        continue
+                    media_type = _media_type(message) if has_media else "text"
+                    size = getattr(getattr(message, "file", None), "size", None) if has_media else None
+                    if size is not None and size > settings.max_file_size_bytes:
+                        logging.warning("Skipping oversized source message chat=%s message_id=%s size=%s", chat_ref, message.id, size)
+                        continue
+                    fallback = f"telegram-{message.id}"
+                    name = safe_filename(getattr(getattr(message, "file", None), "name", None) or fallback)
+                    payload = {
+                        "source_chat": str(chat_ref),
+                        "message_id": int(message.id),
+                        "kind": "media" if has_media else "text",
+                        "media_type": media_type,
+                        "grouped_id": getattr(message, "grouped_id", None),
+                    }
+                    queue.enqueue(str(chat_ref), int(message.id), name, text, payload)
+            if settings.dry_run:
+                # Do not claim or complete durable jobs in preview mode. This keeps any queued work available for a later live run.
+                logging.info("DRY RUN: scanned sources; queue status: %s", queue.stats())
+            else:
+                while await engine.process_one(downloader, upload):
+                    pass
             await asyncio.sleep(settings.poll_seconds)
     finally:
         await sender.close()
@@ -74,11 +119,14 @@ def main() -> int:
             print(f"Dry run: {settings.dry_run}")
         elif args.command == "status":
             print("Queue status")
-            for status, count in queue.stats().items(): print(f"{status}: {count}")
-        else: asyncio.run(_run(settings, queue))
+            for status, count in queue.stats().items():
+                print(f"{status}: {count}")
+        else:
+            asyncio.run(_run(settings, queue))
         return 0
     except (ConfigurationError, RuntimeError) as exc:
         logging.error("%s", exc)
         return 2
 
-if __name__ == "__main__": raise SystemExit(main())
+if __name__ == "__main__":
+    raise SystemExit(main())
