@@ -42,6 +42,16 @@ class QueueTests(unittest.TestCase):
             queue.complete(retry.id)
             self.assertEqual(queue.stats()["completed"], 1)
             self.assertEqual(queue.stats()["pending"], 0)
+    def test_interrupted_processing_job_is_requeued_on_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = TransferQueue(Path(tmp) / "state.sqlite3")
+            queue.enqueue("chat", 7, "resume.bin")
+            queue.next_pending()
+            self.assertEqual(queue.recover_processing(), 1)
+            resumed = queue.next_pending()
+            self.assertEqual(resumed.status, "processing")
+            self.assertEqual(resumed.attempts, 2)
+
     def test_queue_fails_after_max_attempts(self):
         with tempfile.TemporaryDirectory() as tmp:
             queue = TransferQueue(Path(tmp) / "state.sqlite3")
