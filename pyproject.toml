@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "telerubik"
+version = "0.1.0"
+description = "Security-first Telegram to Rubika file transfer worker"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "studio1111" }]
+dependencies = ["Telethon==1.42.0", "rubpy==7.3.5", "python-dotenv==1.1.1"]
+
+[project.scripts]
+telerubik = "telerubik.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
