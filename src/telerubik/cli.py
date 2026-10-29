@@ -56,10 +56,6 @@ async def _run(settings: Settings, queue: TransferQueue) -> None:
     settings.download_dir.mkdir(parents=True, exist_ok=True)
     client = TelegramClient(str(settings.telegram_session_path), settings.telegram_api_id, settings.telegram_api_hash)
     sender = RubikaSender(settings.rubika_bot_token, settings.rubika_destination_guid)
-    await client.start()
-    if not settings.dry_run:
-        await sender.start()
-
     async def downloader(job, directory: Path):
         if job.payload.get("kind") == "text":
             return None
@@ -76,6 +72,9 @@ async def _run(settings: Settings, queue: TransferQueue) -> None:
 
     engine = TransferEngine(queue, settings.download_dir, settings.max_file_size_bytes, settings.max_retries, settings.retry_base_seconds, settings.dry_run)
     try:
+        await client.start()
+        if not settings.dry_run:
+            await sender.start()
         while True:
             for chat in settings.telegram_source_chats:
                 chat_ref = _chat_ref(chat)
