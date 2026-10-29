@@ -6,6 +6,15 @@ from pathlib import Path
 class ConfigurationError(ValueError):
     pass
 
+def _bool_value(env: dict[str, str], key: str, default: str) -> bool:
+    value = env.get(key, default).strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigurationError(f"{key} must be a boolean (true/false)")
+
+
 def _positive_int(env: dict[str, str], key: str, default: int) -> int:
     try:
         value = int(env.get(key, str(default)).strip())
@@ -59,4 +68,4 @@ class Settings:
                    Path(values.get("TELERUBIK_STATE_DB", "./data/telerubik.sqlite3")), Path(values.get("TELERUBIK_DOWNLOAD_DIR", "./downloads")),
                    max_mb * 1024 * 1024, _positive_int(values, "TELERUBIK_MAX_RETRIES", 3), _positive_int(values, "TELERUBIK_RETRY_BASE_SECONDS", 2),
                    _positive_int(values, "TELERUBIK_POLL_SECONDS", 20), _positive_int(values, "TELERUBIK_LOOKBACK_LIMIT", 25), allowed,
-                   values.get("TELERUBIK_DRY_RUN", "true").strip().lower() in {"1", "true", "yes", "on"})
+                   _bool_value(values, "TELERUBIK_DRY_RUN", "true"))
