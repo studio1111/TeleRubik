@@ -69,4 +69,4 @@ python -m compileall -q src tests
 - The adapter follows the documented Rubpy 7.3.5 API, but network delivery and destination permissions must still be verified with a private test.
 - GitHub Actions tests the core and adapter routing without authenticating to Telegram or Rubika.
 
-See design notes, implementation checklist, and security policy in the repository.
+See [design notes](docs/design.md), [implementation checklist](docs/implementation-plan.md), [Termux validation and smoke-test runbook](docs/termux-smoke-test.md), and [security policy](SECURITY.md).
