@@ -78,10 +78,20 @@ async def _run(settings: Settings, queue: TransferQueue) -> None:
         while True:
             for chat in settings.telegram_source_chats:
                 chat_ref = _chat_ref(chat)
-                messages = [message async for message in client.iter_messages(chat_ref, limit=settings.lookback_limit)]
-                # Telethon iter_messages yields newest first. Enqueue oldest first to preserve chronology.
-                for message in reversed(messages):
-                    if not getattr(message, "id", None):
+                cursor = queue.get_cursor(str(chat_ref))
+                if cursor:
+                    # Catch every new message since the last completed scan, even after long downtime.
+                    messages = [message async for message in client.iter_messages(chat_ref, min_id=cursor, reverse=True)]
+                else:
+                    # On first run, limit the initial import to the configured recent-history window.
+                    messages = [message async for message in client.iter_messages(chat_ref, limit=settings.lookback_limit)]
+                    messages.reverse()  # Initial Telethon batch is newest-first.
+                highest_seen = cursor
+                for message in messages:
+                    message_id = getattr(message, "id", None)
+                    if message_id:
+                        highest_seen = max(highest_seen, int(message_id))
+                    if not message_id:
                         continue
                     text = getattr(message, "message", "") or ""
                     kind = _message_kind(message)
@@ -105,6 +115,8 @@ async def _run(settings: Settings, queue: TransferQueue) -> None:
                         "grouped_id": getattr(message, "grouped_id", None),
                     }
                     queue.enqueue(str(chat_ref), int(message.id), name, text, payload)
+                if highest_seen > cursor:
+                    queue.set_cursor(str(chat_ref), highest_seen)
             if settings.dry_run:
                 # Do not claim or complete durable jobs in preview mode. This keeps any queued work available for a later live run.
                 logging.info("DRY RUN: scanned sources; queue status: %s", queue.stats())
