@@ -59,6 +59,9 @@ class TransferQueue:
             updated = db.execute("SELECT * FROM jobs WHERE id=?", (row["id"],)).fetchone()
             db.commit()
             return self._job(updated)
+    def defer(self, job_id: int) -> None:
+        """Return a claimed job to pending without recording a transfer attempt as a failure."""
+        self._transition(job_id, "pending", "")
     def complete(self, job_id: int) -> None:
         self._transition(job_id, "completed", "")
     def retry_or_fail(self, job_id: int, max_attempts: int, error: str) -> str:
@@ -79,7 +82,6 @@ class TransferQueue:
         with self._connect() as db:
             cursor = db.execute("UPDATE jobs SET status='pending', updated_at=CURRENT_TIMESTAMP WHERE status='processing'")
             return cursor.rowcount
-
     def stats(self) -> dict[str, int]:
         with self._connect() as db:
             rows = db.execute("SELECT status, COUNT(*) AS count FROM jobs GROUP BY status").fetchall()
