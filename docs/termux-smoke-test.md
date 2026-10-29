@@ -39,7 +39,9 @@ Keep `TELERUBIK_DRY_RUN=true`. Run the worker and observe its logs:
 telerubik run
 ```
 
-Stop it with Ctrl+C. In dry-run mode, the worker scans Telegram and queues eligible text/media, but it does not process the queue or send to Rubika. Check the queue again with `telerubik status`.
+The worker should print timestamped INFO logs for startup mode, Telegram connection, each source scan, counts of scanned/new/duplicate/skipped messages, and queue totals. During a live transfer, each job should also report processing, download validation, sending, completion, or a bounded error/retry status. It does not print credentials or message bodies.
+
+Stop it with Ctrl+C. In dry-run mode, the worker scans Telegram and queues eligible text/media, but it does not process the queue or send to Rubika. Existing queued jobs remain pending by design. Check the queue again with `telerubik status`.
 
 ## 3. Live smoke test (only after deliberate approval)
 
