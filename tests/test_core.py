@@ -51,7 +51,6 @@ class QueueTests(unittest.TestCase):
             resumed = queue.next_pending()
             self.assertEqual(resumed.status, "processing")
             self.assertEqual(resumed.attempts, 2)
-
     def test_queue_fails_after_max_attempts(self):
         with tempfile.TemporaryDirectory() as tmp:
             queue = TransferQueue(Path(tmp) / "state.sqlite3")
@@ -59,24 +58,46 @@ class QueueTests(unittest.TestCase):
             job = queue.next_pending()
             self.assertEqual(queue.retry_or_fail(job.id, 1, "permanent"), "failed")
             self.assertEqual(queue.stats()["failed"], 1)
+    def test_defer_returns_claimed_job_to_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = TransferQueue(Path(tmp) / "state.sqlite3")
+            queue.enqueue("chat", 2, "text.txt", "hello", {"kind": "text"})
+            job = queue.next_pending()
+            queue.defer(job.id)
+            self.assertEqual(queue.stats()["pending"], 1)
+            self.assertEqual(queue.stats()["processing"], 0)
 
 class EngineTests(unittest.TestCase):
-    def test_dry_run_validates_then_cleans_temporary_file_without_sending(self):
+    def test_dry_run_validates_then_cleans_file_and_keeps_job_pending(self):
         async def scenario(tmp):
             root = Path(tmp) / "downloads"
             queue = TransferQueue(Path(tmp) / "queue.sqlite3")
-            queue.enqueue("chat", 8, "video.mp4", "caption")
+            queue.enqueue("chat", 8, "video.mp4", "caption", {"kind":"media", "media_type":"video"})
             sent = []
             async def download(job, directory):
                 path = directory / "video.mp4"
                 path.write_bytes(b"test-media")
                 return path
-            async def send(path, caption): sent.append((path, caption))
+            async def send(path, caption, job): sent.append((path, caption, job))
             engine = TransferEngine(queue, root, 100, 1, 1, dry_run=True)
-            self.assertTrue(await engine.process_one(download, send))
+            self.assertFalse(await engine.process_one(download, send))
             self.assertEqual(sent, [])
-            self.assertEqual(queue.stats()["completed"], 1)
+            self.assertEqual(queue.stats()["completed"], 0)
+            self.assertEqual(queue.stats()["pending"], 1)
             self.assertEqual(list(root.iterdir()), [])
+        with tempfile.TemporaryDirectory() as tmp: asyncio.run(scenario(tmp))
+
+    def test_text_job_sends_without_downloading_media(self):
+        async def scenario(tmp):
+            queue = TransferQueue(Path(tmp) / "queue.sqlite3")
+            queue.enqueue("chat", 10, "telegram-10", "plain text", {"kind":"text"})
+            async def download(job, directory): self.fail("text job must not download a file")
+            sent = []
+            async def send(path, caption, job): sent.append((path, caption, job.payload["kind"]))
+            engine = TransferEngine(queue, Path(tmp) / "downloads", 100, 1, 1, dry_run=False)
+            self.assertTrue(await engine.process_one(download, send))
+            self.assertEqual(sent, [(None, "plain text", "text")])
+            self.assertEqual(queue.stats()["completed"], 1)
         with tempfile.TemporaryDirectory() as tmp: asyncio.run(scenario(tmp))
 
     def test_rejects_download_path_outside_configured_directory(self):
@@ -86,7 +107,7 @@ class EngineTests(unittest.TestCase):
             outside = Path(tmp) / "outside.bin"
             outside.write_bytes(b"not-sent")
             async def download(job, directory): return outside
-            async def send(path, caption): self.fail("must not send a path outside the download directory")
+            async def send(path, caption, job): self.fail("must not send a path outside the download directory")
             engine = TransferEngine(queue, Path(tmp) / "downloads", 100, 1, 1, dry_run=False)
             await engine.process_one(download, send)
             self.assertEqual(queue.stats()["failed"], 1)
