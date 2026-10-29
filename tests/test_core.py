@@ -1,7 +1,9 @@
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
 from telerubik.config import ConfigurationError, Settings
+from telerubik.engine import TransferEngine
 from telerubik.queue import TransferQueue
 from telerubik.security import safe_filename, validate_file_size
 
@@ -47,5 +49,38 @@ class QueueTests(unittest.TestCase):
             job = queue.next_pending()
             self.assertEqual(queue.retry_or_fail(job.id, 1, "permanent"), "failed")
             self.assertEqual(queue.stats()["failed"], 1)
+
+class EngineTests(unittest.TestCase):
+    def test_dry_run_validates_then_cleans_temporary_file_without_sending(self):
+        async def scenario(tmp):
+            root = Path(tmp) / "downloads"
+            queue = TransferQueue(Path(tmp) / "queue.sqlite3")
+            queue.enqueue("chat", 8, "video.mp4", "caption")
+            sent = []
+            async def download(job, directory):
+                path = directory / "video.mp4"
+                path.write_bytes(b"test-media")
+                return path
+            async def send(path, caption): sent.append((path, caption))
+            engine = TransferEngine(queue, root, 100, 1, 1, dry_run=True)
+            self.assertTrue(await engine.process_one(download, send))
+            self.assertEqual(sent, [])
+            self.assertEqual(queue.stats()["completed"], 1)
+            self.assertEqual(list(root.iterdir()), [])
+        with tempfile.TemporaryDirectory() as tmp: asyncio.run(scenario(tmp))
+
+    def test_rejects_download_path_outside_configured_directory(self):
+        async def scenario(tmp):
+            queue = TransferQueue(Path(tmp) / "queue.sqlite3")
+            queue.enqueue("chat", 9, "bad.bin")
+            outside = Path(tmp) / "outside.bin"
+            outside.write_bytes(b"not-sent")
+            async def download(job, directory): return outside
+            async def send(path, caption): self.fail("must not send a path outside the download directory")
+            engine = TransferEngine(queue, Path(tmp) / "downloads", 100, 1, 1, dry_run=False)
+            await engine.process_one(download, send)
+            self.assertEqual(queue.stats()["failed"], 1)
+            self.assertTrue(outside.exists())
+        with tempfile.TemporaryDirectory() as tmp: asyncio.run(scenario(tmp))
 
 if __name__ == "__main__": unittest.main()
