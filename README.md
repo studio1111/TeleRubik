@@ -9,7 +9,7 @@
 - Transfers text-only posts as text and downloadable photos, videos, and generic files with their captions.
 - If a Telegram message contains a non-downloadable preview or unsupported media but also has text, transfers the text instead of repeatedly retrying an impossible file download.
 - Enqueues each polling batch oldest-first and processes durable jobs in queue order.
-- Persists a per-source scan cursor: the initial import is limited to the configured recent-history window, then polling catches every newer message after downtime instead of relying on a rolling last-N window.
+- Persists a per-source scan cursor: the initial import is limited to the configured recent-history window, then polling catches every newer message after downtime instead of relying on a rolling last-N window. Incremental history is streamed to avoid buffering an unbounded backlog in memory.
 - Idempotent queue keyed by Telegram chat and message ID.
 - SQLite state survives restarts; failed jobs have bounded retries.
 - Safe filename normalization, size cap, download path boundary checks, and temporary-file cleanup.
