@@ -48,6 +48,14 @@ async def _run(settings: Settings, queue: TransferQueue) -> None:
     recovered = queue.recover_processing()
     if recovered:
         logging.warning("Recovered %s interrupted queue job(s)", recovered)
+    logging.info(
+        "Starting TeleRubik: mode=%s sources=%s poll_interval=%ss max_file_size=%s MiB queue=%s",
+        "DRY RUN (sending disabled)" if settings.dry_run else "LIVE TRANSFER",
+        len(settings.telegram_source_chats),
+        settings.poll_seconds,
+        settings.max_file_size_bytes // (1024 * 1024),
+        queue.stats(),
+    )
     try:
         from telethon import TelegramClient
     except ImportError as exc:
@@ -56,6 +64,7 @@ async def _run(settings: Settings, queue: TransferQueue) -> None:
     settings.download_dir.mkdir(parents=True, exist_ok=True)
     client = TelegramClient(str(settings.telegram_session_path), settings.telegram_api_id, settings.telegram_api_hash)
     sender = RubikaSender(settings.rubika_bot_token, settings.rubika_destination_guid)
+
     async def downloader(job, directory: Path):
         if job.payload.get("kind") == "text":
             return None
@@ -72,13 +81,23 @@ async def _run(settings: Settings, queue: TransferQueue) -> None:
 
     engine = TransferEngine(queue, settings.download_dir, settings.max_file_size_bytes, settings.max_retries, settings.retry_base_seconds, settings.dry_run)
     try:
+        logging.info("Connecting to Telegram...")
         await client.start()
+        logging.info("Telegram connection established.")
         if not settings.dry_run:
+            logging.info("Starting Rubika sender for configured destination.")
             await sender.start()
+        else:
+            logging.info("Dry run is enabled: no messages or media will be sent to Rubika.")
         while True:
             for chat in settings.telegram_source_chats:
                 chat_ref = _chat_ref(chat)
                 cursor = queue.get_cursor(str(chat_ref))
+                logging.info(
+                    "Scanning source %s (%s).",
+                    chat_ref,
+                    "new messages after saved cursor" if cursor else f"initial history limit={settings.lookback_limit}",
+                )
                 if cursor:
                     # Catch every new message since the last completed scan, even after long downtime.
                     messages = [message async for message in client.iter_messages(chat_ref, min_id=cursor, reverse=True)]
@@ -87,22 +106,28 @@ async def _run(settings: Settings, queue: TransferQueue) -> None:
                     messages = [message async for message in client.iter_messages(chat_ref, limit=settings.lookback_limit)]
                     messages.reverse()  # Initial Telethon batch is newest-first.
                 highest_seen = cursor
+                scanned = queued = duplicates = skipped = 0
                 for message in messages:
+                    scanned += 1
                     message_id = getattr(message, "id", None)
                     if message_id:
                         highest_seen = max(highest_seen, int(message_id))
                     if not message_id:
+                        skipped += 1
                         continue
                     text = getattr(message, "message", "") or ""
                     kind = _message_kind(message)
                     if kind is None:
+                        skipped += 1
                         logging.debug("Skipping unsupported empty media chat=%s message_id=%s", chat_ref, message.id)
                         continue
                     if settings.allowed_user_ids and getattr(message, "sender_id", None) not in settings.allowed_user_ids:
+                        skipped += 1
                         continue
                     media_type = _media_type(message) if kind == "media" else "text"
                     size = getattr(getattr(message, "file", None), "size", None) if kind == "media" else None
                     if size is not None and size > settings.max_file_size_bytes:
+                        skipped += 1
                         logging.warning("Skipping oversized source message chat=%s message_id=%s size=%s", chat_ref, message.id, size)
                         continue
                     fallback = f"telegram-{message.id}"
@@ -114,15 +139,23 @@ async def _run(settings: Settings, queue: TransferQueue) -> None:
                         "media_type": media_type,
                         "grouped_id": getattr(message, "grouped_id", None),
                     }
-                    queue.enqueue(str(chat_ref), int(message.id), name, text, payload)
+                    if queue.enqueue(str(chat_ref), int(message.id), name, text, payload):
+                        queued += 1
+                    else:
+                        duplicates += 1
                 if highest_seen > cursor:
                     queue.set_cursor(str(chat_ref), highest_seen)
+                logging.info(
+                    "Source scan complete chat=%s scanned=%s newly_queued=%s already_queued=%s skipped=%s cursor=%s",
+                    chat_ref, scanned, queued, duplicates, skipped, highest_seen,
+                )
             if settings.dry_run:
                 # Do not claim or complete durable jobs in preview mode. This keeps any queued work available for a later live run.
-                logging.info("DRY RUN: scanned sources; queue status: %s", queue.stats())
+                logging.info("DRY RUN: sending is disabled; queue status: %s", queue.stats())
             else:
                 while await engine.process_one(downloader, upload):
                     pass
+                logging.info("Transfer pass complete; queue status: %s", queue.stats())
             await asyncio.sleep(settings.poll_seconds)
     finally:
         await sender.close()
