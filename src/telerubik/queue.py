@@ -74,6 +74,12 @@ class TransferQueue:
             cursor = db.execute("UPDATE jobs SET status=?, last_error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (status, error, job_id))
             if cursor.rowcount != 1:
                 raise KeyError(f"Unknown job {job_id}")
+    def recover_processing(self) -> int:
+        """Requeue interrupted jobs at startup; run one worker instance per database."""
+        with self._connect() as db:
+            cursor = db.execute("UPDATE jobs SET status='pending', updated_at=CURRENT_TIMESTAMP WHERE status='processing'")
+            return cursor.rowcount
+
     def stats(self) -> dict[str, int]:
         with self._connect() as db:
             rows = db.execute("SELECT status, COUNT(*) AS count FROM jobs GROUP BY status").fetchall()
