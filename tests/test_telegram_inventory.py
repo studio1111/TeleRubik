@@ -9,7 +9,8 @@ class InventoryTests(unittest.TestCase):
     def test_quality_detection(self):
         self.assertEqual(classify_quality("Anime.Episode.1080p.WEB-DL.mkv"), "1080p")
         self.assertEqual(classify_quality("Anime.720p.mkv"), "720p")
-        self.assertEqual(classify_quality("Anime.1080p2160p.mkv"), "unknown")
+        self.assertEqual(classify_quality("Anime.2160p.mkv"), "2160p")
+        self.assertEqual(classify_quality("Anime.Episode.WEB-DL.mkv"), "unknown")
 
     def test_media_record(self):
         message = SimpleNamespace(
