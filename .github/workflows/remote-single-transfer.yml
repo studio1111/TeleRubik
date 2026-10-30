@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       allow_live_send:
-        description: "Actually send the single approved Spider-Man file to the configured private Rubika destination"
+        description: "Authorize the one-time live send of Telegram message 1734 to the configured private Rubika destination"
         required: true
         type: boolean
         default: false
@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   transfer:
-    name: Transfer approved Telegram message 1734 on remote runner
+    name: Transfer approved Telegram message 1734
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
@@ -26,18 +26,25 @@ jobs:
       TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
       TELEGRAM_SESSION_STRING: ${{ secrets.TELEGRAM_SESSION_STRING }}
       TELEGRAM_SOURCE_CHATS: "@Animehighbo"
-      RUBIKA_BOT_TOKEN: ${{ secrets.RUBIKA_BOT_TOKEN }}
+      RUBIKA_SESSION_B64: ${{ secrets.RUBIKA_SESSION_B64 }}
+      RUBIKA_SESSION_NAME: ${{ runner.temp }}/telerubik-private/rubika_session.rp
       RUBIKA_DESTINATION_GUID: ${{ secrets.RUBIKA_DESTINATION_GUID }}
       TELERUBIK_MAX_FILE_SIZE_MB: "2048"
-      TELERUBIK_DRY_RUN: ${{ inputs.allow_live_send == false }}
-      TELERUBIK_DOWNLOAD_DIR: "./downloads"
-      TELERUBIK_STATE_DB: "./data/remote-transfer.sqlite3"
+      TELERUBIK_DRY_RUN: "false"
+      TELERUBIK_DOWNLOAD_DIR: "${{ runner.temp }}/telerubik-downloads"
+      TELERUBIK_STATE_DB: "${{ runner.temp }}/telerubik-data/remote-transfer.sqlite3"
     steps:
+      - name: Require explicit live-send authorization
+        if: ${{ inputs.allow_live_send != true }}
+        run: |
+          echo "::error::Live send was not authorized. Re-run manually and set allow_live_send=true."
+          exit 1
+
       - name: Check required secrets without displaying values
         shell: bash
         run: |
           set -euo pipefail
-          for key in TELEGRAM_API_ID TELEGRAM_API_HASH TELEGRAM_SESSION_STRING RUBIKA_BOT_TOKEN RUBIKA_DESTINATION_GUID; do
+          for key in TELEGRAM_API_ID TELEGRAM_API_HASH TELEGRAM_SESSION_STRING RUBIKA_SESSION_B64 RUBIKA_DESTINATION_GUID; do
             if [[ -z "${!key:-}" ]]; then
               echo "::error::Missing required repository Actions secret: $key"
               exit 1
@@ -45,41 +52,56 @@ jobs:
           done
           echo "Required remote credentials are present."
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
-          ref: feat/complete-post-transfer
-      - uses: actions/setup-python@v7
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
 
-      - name: Install TeleRubik
-        run: python -m pip install --upgrade pip && python -m pip install -e .
-
-      - name: Verify isolated target and remote disk capacity
+      - name: Provision private Rubpy session
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p downloads data
-          df -h .
+          install -d -m 700 "$RUNNER_TEMP/telerubik-private"
+          printf '%s' "$RUBIKA_SESSION_B64" | base64 --decode > "$RUBIKA_SESSION_NAME"
+          chmod 600 "$RUBIKA_SESSION_NAME"
+          unset RUBIKA_SESSION_B64
+          test -s "$RUBIKA_SESSION_NAME"
+          echo "Rubpy session provisioned in runner temporary storage."
+
+      - name: Install TeleRubik
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Verify runner capacity
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h "$RUNNER_TEMP"
           python - <<'PY'
           import shutil
-          free = shutil.disk_usage(".").free
-          print(f"Remote runner free disk: {free // (1024 * 1024)} MiB")
+          free = shutil.disk_usage(__import__("os").environ["RUNNER_TEMP"]).free
+          print(f"Runner temporary free disk: {free // (1024 * 1024)} MiB")
           if free < 3 * 1024 * 1024 * 1024:
-              raise SystemExit("At least 3 GiB free disk is required for the 1.74 GB target plus reserve.")
+              raise SystemExit("At least 3 GiB free disk is required for the approved media and reserve.")
           PY
 
-      - name: Transfer only the approved Spider-Man message
+      - name: Transfer only Telegram message 1734
         run: >-
           telerubik transfer-one
           --source-chat @Animehighbo
           --message-id 1734
           --expected-filename "Spider-Man.Brand.New.Day.2026.720p.WEB-DL.ValaMovie.mkv"
 
-      - name: Remove all temporary media and session state
+      - name: Remove temporary media, session and state
         if: always()
         shell: bash
         run: |
-          rm -rf downloads data private
-          echo "Temporary remote transfer files removed."
+          rm -rf "$RUNNER_TEMP/telerubik-downloads"
+          rm -rf "$RUNNER_TEMP/telerubik-data"
+          rm -rf "$RUNNER_TEMP/telerubik-private"
+          echo "Temporary transfer files and session removed."
