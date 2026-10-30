@@ -3,7 +3,6 @@ name: Remote single-file transfer
 on:
   # Keep this manual-transfer workflow explicitly inert on branch pushes.
   push:
-    branches: ["**"]
   workflow_dispatch:
     inputs:
       allow_live_send:
