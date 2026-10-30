@@ -60,6 +60,24 @@ class RubikaSenderTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_text_only_post_skips_upload_and_preserves_text(self):
+        async def scenario():
+            fake_client = Mock()
+            fake_client.send_message = AsyncMock(return_value={"status": "OK"})
+            rubpy_module = types.ModuleType("rubpy")
+            rubpy_module.Client = Mock(return_value=fake_client)
+            with patch.dict(sys.modules, {"rubpy": rubpy_module}):
+                sender = RubikaSender("session", "destination")
+                await sender.start()
+                await sender.send_document(None, "Text post")
+                fake_client.upload.assert_not_called()
+                fake_client.send_message.assert_awaited_once_with(
+                    object_guid="destination", text="Text post"
+                )
+                await sender.close()
+
+        asyncio.run(scenario())
+
     def test_missing_upload_metadata_fails_closed(self):
         async def scenario():
             fake_client = Mock()
