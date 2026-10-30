@@ -70,13 +70,11 @@ class TransferEngine:
         finally:
             if path is not None and path.is_file():
                 try:
-                    if root := self.download_dir.resolve():
-                        if root not in path.parents:
-                            return
+                    root = self.download_dir.resolve()
                     # Keep verified files after live upload failures so retries and
                     # process restarts can reuse them. Dry-run and successful sends
                     # clean both the file and its integrity sidecar.
-                    if transfer_completed or self.dry_run:
+                    if root in path.parents and (transfer_completed or self.dry_run):
                         path.unlink()
                         cache_sidecar_path(path).unlink(missing_ok=True)
                 except OSError:
