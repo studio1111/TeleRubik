@@ -1,0 +1,77 @@
+name: Rubika private-destination smoke test
+
+on:
+  workflow_dispatch:
+    inputs:
+      destination_guid:
+        description: "GUID of a private Rubika destination you control"
+        required: true
+        type: string
+      confirm_live_test:
+        description: "Choose the exact confirmation only after verifying the destination is private"
+        required: true
+        type: choice
+        options:
+          - NO_LIVE_SEND
+          - I_CONFIRM_PRIVATE_DESTINATION
+        default: NO_LIVE_SEND
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rubika-smoke-test
+  cancel-in-progress: false
+
+jobs:
+  smoke-test:
+    if: ${{ inputs.confirm_live_test == 'I_CONFIRM_PRIVATE_DESTINATION' && inputs.destination_guid != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package
+        run: python -m pip install -e .
+
+      - name: Send one harmless test message
+        env:
+          RUBIKA_BOT_TOKEN: ${{ secrets.RUBIKA_BOT_TOKEN }}
+          RUBIKA_DESTINATION_GUID: ${{ inputs.destination_guid }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          python - <<'PY'
+          import asyncio
+          import os
+          from telerubik.adapters import RubikaSender
+
+          async def main():
+              token = os.environ.get("RUBIKA_BOT_TOKEN", "").strip()
+              destination = os.environ.get("RUBIKA_DESTINATION_GUID", "").strip()
+              if not token:
+                  raise SystemExit("Missing repository secret RUBIKA_BOT_TOKEN; no message was sent.")
+              if not destination:
+                  raise SystemExit("Destination GUID is empty; no message was sent.")
+
+              sender = RubikaSender(token, destination)
+              try:
+                  await sender.start()
+                  message = (
+                      "TeleRubik private-destination smoke test. "
+                      f"GitHub Actions run: {os.environ['GITHUB_RUN_ID']}. "
+                      "This is a single test message."
+                  )
+                  await sender.send_message(message)
+                  print("Rubika sender returned successfully. Verify the message in the private destination.")
+              finally:
+                  await sender.close()
+
+          asyncio.run(main())
+          PY
