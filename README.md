@@ -2,7 +2,7 @@
 
 **TeleRubik** transfers text-only posts and posts with media from Telegram chats you are authorized to read to a Rubika destination you control. It is independently implemented and borrows the upload pattern observed in Walrus: use a Rubpy **user-account Client**, upload the complete file with `client.upload`, then send the returned metadata with `client.send_message(file_inline=...)`. It does not use the Rubpy BotClient path for media uploads.
 
-> **Status:** the pinned `rubpy==7.3.5` source contract has been inspected and the adapter now handles its session-key, upload-streaming and response-object behavior. The adapter also replaces Rubpy's TLS-verification-disabled HTTP session with certificate-verified TLS before authenticated requests. Automated tests are running; a live authenticated runtime test and end-to-end transfer to a private destination are still pending.
+> **Status:** the pinned `rubpy==7.3.5` source contract has been inspected and the adapter now handles its session-key, upload-streaming and response-object behavior. The adapter also replaces Rubpy's TLS-verification-disabled HTTP session with certificate-verified TLS before authenticated requests. The latest CI matrix passed on Python 3.11, 3.12 and 3.13, and CodeQL plus dependency audit passed. A live authenticated runtime test and end-to-end transfer to a private destination are still pending.
 
 ## Current capabilities
 
