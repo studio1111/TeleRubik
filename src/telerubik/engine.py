@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import tempfile
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -34,18 +35,26 @@ class TransferEngine:
         if not self.dry_run:
             raise RuntimeError("preview_pending is available only when dry-run is enabled")
 
-        root = self.download_dir.resolve()
         previewed = 0
-        for job in self.queue.iter_pending():
-            if job.id in self._previewed_jobs:
-                continue
-            # One preview per job per process. A later live process will still
-            # see the job as pending and perform the actual send.
-            self._previewed_jobs.add(job.id)
-            previewed += 1
-            path: Path | None = None
-            try:
-                downloaded = await downloader(job, self.download_dir)
+        # Use an isolated temporary directory so a preview cannot delete or
+        # overwrite a verified cache file retained by a previous live failure.
+        with tempfile.TemporaryDirectory(
+            prefix=".telerubik-preview-", dir=self.download_dir
+        ) as temporary_directory:
+            preview_root = Path(temporary_directory).resolve()
+            # Materialize the lightweight queue records first. Do not hold a
+            # SQLite read transaction open while network downloads are running.
+            pending_jobs = list(self.queue.iter_pending())
+            for job in pending_jobs:
+                if job.id in self._previewed_jobs:
+                    continue
+                # One preview per job per process. A later live process will
+                # still see the job as pending and perform the actual send.
+                self._previewed_jobs.add(job.id)
+                previewed += 1
+                path: Path | None = None
+                try:
+                    downloaded = await downloader(job, preview_root)
                 if downloaded is None:
                     if job.payload.get("text_only") is not True or not job.caption.strip():
                         raise RuntimeError("Source message has no downloadable file or text")
@@ -56,32 +65,24 @@ class TransferEngine:
                     )
                     continue
 
-                path = Path(downloaded).resolve()
-                if root not in path.parents:
-                    raise RuntimeError("Downloader returned a path outside the download directory")
-                if not path.is_file():
-                    raise RuntimeError("Downloaded file does not exist")
-                size = path.stat().st_size
-                if not validate_file_size(size, self.max_file_size_bytes):
-                    raise RuntimeError("File size exceeds configured limit or is invalid")
-                log.info(
-                    "DRY RUN: job=%s name=%s bytes=%s sha256=%s (left pending)",
-                    job.id,
-                    safe_filename(job.filename),
-                    size,
-                    sha256_file(path),
-                )
-            except Exception as exc:
-                # Preview failures do not mutate retry counts or queue state.
-                log.warning("DRY RUN validation failed for job %s (%s)", job.id, type(exc).__name__)
-            finally:
-                if path is not None and path.is_file() and root in path.parents:
-                    try:
-                        path.unlink()
-                        cache_sidecar_path(path).unlink(missing_ok=True)
-                    except OSError:
-                        log.warning("Could not clean dry-run file for job %s", job.id)
-        return previewed
+                    path = Path(downloaded).resolve()
+                    if preview_root not in path.parents:
+                        raise RuntimeError("Downloader returned a path outside the isolated preview directory")
+                    if not path.is_file():
+                        raise RuntimeError("Downloaded file does not exist")
+                    size = path.stat().st_size
+                    if not validate_file_size(size, self.max_file_size_bytes):
+                        raise RuntimeError("File size exceeds configured limit or is invalid")
+                    log.info(
+                        "DRY RUN: job=%s name=%s bytes=%s sha256=%s (left pending)",
+                        job.id,
+                        safe_filename(job.filename),
+                        size,
+                        sha256_file(path),
+                    )
+                except Exception as exc:
+                    # Preview failures do not mutate retry counts or queue state.
+                    log.warning("DRY RUN validation failed for job %s (%s)", job.id, type(exc).__name__)
 
     async def process_one(self, downloader: Downloader, sender: Sender) -> bool:
         if self.dry_run:
