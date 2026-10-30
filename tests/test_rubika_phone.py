@@ -32,6 +32,14 @@ class RubikaPhoneNormalizationTests(unittest.TestCase):
         error = ApiError({"status": "ERROR_GENERIC", "status_det": "INVALID_INPUT", "phone": "private"})
         self.assertEqual(safe_error_fields(error), ("ERROR_GENERIC", "INVALID_INPUT"))
 
+    def test_error_reporting_extracts_stringified_rubpy_response(self):
+        error = RuntimeError("{'status': 'ERROR_GENERIC', 'status_det': 'INVALID_INPUT', 'phone': 'private'}")
+        self.assertEqual(safe_error_fields(error), ("ERROR_GENERIC", "INVALID_INPUT"))
+
+    def test_error_reporting_rejects_untrusted_identifier_text(self):
+        error = RuntimeError("{'status': 'private phone 123', 'status_det': 'INVALID_INPUT'}")
+        self.assertEqual(safe_error_fields(error), ("unknown", "INVALID_INPUT"))
+
 
 if __name__ == "__main__":
     unittest.main()
