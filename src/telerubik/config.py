@@ -24,6 +24,7 @@ class Settings:
     telegram_api_id: int
     telegram_api_hash: str
     telegram_session_path: Path
+    telegram_session_string: str
     telegram_source_chats: tuple[str, ...]
     rubika_session_name: str
     rubika_destination_guid: str
@@ -69,19 +70,20 @@ class Settings:
             raise ConfigurationError("RUBIKA_SESSION_NAME must be a valid session name or path")
         max_mb = _positive_int(values, "TELERUBIK_MAX_FILE_SIZE_MB", 2048)
         return cls(
-            api_id,
-            values["TELEGRAM_API_HASH"].strip(),
-            Path(values.get("TELEGRAM_SESSION_PATH", "./private/telegram_session")),
-            chats,
-            session_name,
-            values["RUBIKA_DESTINATION_GUID"].strip(),
-            Path(values.get("TELERUBIK_STATE_DB", "./data/telerubik.sqlite3")),
-            Path(values.get("TELERUBIK_DOWNLOAD_DIR", "./downloads")),
-            max_mb * 1024 * 1024,
-            _positive_int(values, "TELERUBIK_MAX_RETRIES", 3),
-            _positive_int(values, "TELERUBIK_RETRY_BASE_SECONDS", 2),
-            _positive_int(values, "TELERUBIK_POLL_SECONDS", 20),
-            _positive_int(values, "TELERUBIK_LOOKBACK_LIMIT", 25),
-            allowed,
-            values.get("TELERUBIK_DRY_RUN", "true").strip().lower() in {"1", "true", "yes", "on"},
+            telegram_api_id=api_id,
+            telegram_api_hash=values["TELEGRAM_API_HASH"].strip(),
+            telegram_session_path=Path(values.get("TELEGRAM_SESSION_PATH", "./private/telegram_session")),
+            telegram_session_string=values.get("TELEGRAM_SESSION_STRING", "").strip(),
+            telegram_source_chats=chats,
+            rubika_session_name=session_name,
+            rubika_destination_guid=values["RUBIKA_DESTINATION_GUID"].strip(),
+            state_db=Path(values.get("TELERUBIK_STATE_DB", "./data/telerubik.sqlite3")),
+            download_dir=Path(values.get("TELERUBIK_DOWNLOAD_DIR", "./downloads")),
+            max_file_size_bytes=max_mb * 1024 * 1024,
+            max_retries=_positive_int(values, "TELERUBIK_MAX_RETRIES", 3),
+            retry_base_seconds=_positive_int(values, "TELERUBIK_RETRY_BASE_SECONDS", 2),
+            poll_seconds=_positive_int(values, "TELERUBIK_POLL_SECONDS", 20),
+            lookback_limit=_positive_int(values, "TELERUBIK_LOOKBACK_LIMIT", 25),
+            allowed_user_ids=allowed,
+            dry_run=values.get("TELERUBIK_DRY_RUN", "true").strip().lower() in {"1", "true", "yes", "on"},
         )
