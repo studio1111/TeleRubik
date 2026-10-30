@@ -281,7 +281,7 @@ class RubikaSenderTests(unittest.TestCase):
                         path.write_bytes(b"x")
                         sender = RubikaSender("session", "destination")
                         await sender.start()
-                        with self.assertRaisesRegex(RuntimeError, "explicit success status"):
+                        with self.assertRaisesRegex(RuntimeError, "verifiable success result"):
                             await sender.send_document(path, "caption")
                         await sender.close()
 
