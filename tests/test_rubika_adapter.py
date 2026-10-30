@@ -123,7 +123,7 @@ class RubikaSenderTests(unittest.TestCase):
 
             fake_client.get_me.side_effect = verify_key_before_api_call
             fake_client.upload = AsyncMock(return_value={"file_id": "abc", "access_hash": "xyz"})
-            fake_client.send_message = AsyncMock(return_value={"status": "OK"})
+            fake_client.send_message = AsyncMock(return_value={"status": "OK", "status_det": "OK"})
             rubpy_modules = fake_rubpy_modules(fake_client)
             with patch.dict(sys.modules, rubpy_modules):
                 with patch("telerubik.adapters._validate_authenticated_session"):
@@ -133,7 +133,7 @@ class RubikaSenderTests(unittest.TestCase):
                         sender = RubikaSender("./private/rubika_session", "destination-guid")
                         await sender.start()
                         result = await sender.send_document(path, "Episode caption")
-                        self.assertEqual(result, {"status": "OK"})
+                        self.assertEqual(result, {"status": "OK", "status_det": "OK"})
                         rubpy_modules["rubpy"].Client.assert_called_once_with(
                             name="./private/rubika_session", platform="Android", logger=ANY
                         )
@@ -166,7 +166,7 @@ class RubikaSenderTests(unittest.TestCase):
         async def scenario():
             fake_client = make_fake_client()
             fake_client.upload = AsyncMock(return_value=UploadUpdate())
-            fake_client.send_message = AsyncMock(return_value={"status": "OK"})
+            fake_client.send_message = AsyncMock(return_value={"status": "OK", "status_det": "OK"})
             rubpy_modules = fake_rubpy_modules(fake_client)
             with patch.dict(sys.modules, rubpy_modules):
                 with patch("telerubik.adapters._validate_authenticated_session"):
@@ -188,7 +188,7 @@ class RubikaSenderTests(unittest.TestCase):
         async def scenario():
             fake_client = make_fake_client()
             fake_client.upload = AsyncMock(return_value={"file_id": "abc"})
-            fake_client.send_message = AsyncMock(return_value={"status": "OK"})
+            fake_client.send_message = AsyncMock(return_value={"status": "OK", "status_det": "OK"})
             rubpy_modules = fake_rubpy_modules(fake_client)
             with patch.dict(sys.modules, rubpy_modules):
                 with patch("telerubik.adapters._validate_authenticated_session"):
@@ -206,7 +206,7 @@ class RubikaSenderTests(unittest.TestCase):
     def test_text_only_post_skips_upload_and_preserves_text(self):
         async def scenario():
             fake_client = make_fake_client()
-            fake_client.send_message = AsyncMock(return_value={"status": "OK"})
+            fake_client.send_message = AsyncMock(return_value={"status": "OK", "status_det": "OK"})
             rubpy_modules = fake_rubpy_modules(fake_client)
             with patch.dict(sys.modules, rubpy_modules):
                 with patch("telerubik.adapters._validate_authenticated_session"):
@@ -220,6 +220,10 @@ class RubikaSenderTests(unittest.TestCase):
                     await sender.close()
 
         asyncio.run(scenario())
+
+    def test_rejects_incomplete_status_pair(self):
+        with self.assertRaisesRegex(RuntimeError, "incomplete success status pair"):
+            RubikaSender._validate_send_result({"status": "OK"})
 
     def test_rejects_non_success_status_detail_even_when_status_is_ok(self):
         async def scenario():
