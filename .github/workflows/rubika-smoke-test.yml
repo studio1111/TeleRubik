@@ -87,7 +87,7 @@ jobs:
                   with tempfile.TemporaryDirectory(prefix="telerubik-smoke-") as directory:
                       path = Path(directory) / "telerubik-smoke-test.txt"
                       path.write_bytes(
-                          b"TeleRubik user-session smoke test\\n" + b"x" * 1024
+                          b"x" * 1024
                       )
                       result = await sender.send_document(
                           path,
