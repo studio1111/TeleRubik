@@ -63,7 +63,10 @@ class SingleTransferTests(unittest.TestCase):
                     disconnect=AsyncMock(),
                 )
 
+                events = []
+
                 async def download(_message, file):
+                    events.append("download")
                     Path(file).write_bytes(b"1234567")
                     return file
 
@@ -72,7 +75,7 @@ class SingleTransferTests(unittest.TestCase):
                 with patch.dict(sys.modules, modules):
                     with patch("telerubik.single_transfer.RubikaSender") as sender_type:
                         sender = sender_type.return_value
-                        sender.start = AsyncMock()
+                        sender.start = AsyncMock(side_effect=lambda: events.append("rubika-auth"))
                         sender.send_document = AsyncMock()
                         sender.close = AsyncMock()
                         await transfer_one(
@@ -83,6 +86,7 @@ class SingleTransferTests(unittest.TestCase):
                         )
                         client.get_messages.assert_awaited_once_with("source-entity", ids=1734)
                         sender.start.assert_awaited_once()
+                        self.assertEqual(events, ["rubika-auth", "download"])
                         sender.send_document.assert_awaited_once()
                         sent_path, caption = sender.send_document.await_args.args
                         self.assertEqual(Path(sent_path).name, "Spider-Man.Brand.New.Day.2026.720p.WEB-DL.ValaMovie.mkv")
