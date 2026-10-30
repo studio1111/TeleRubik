@@ -18,7 +18,7 @@ Telegram client (Telethon) -> source chat/user filters -> SQLite idempotent queu
 - Dry-run is on by default.
 - No secrets or session files in Git.
 - Download paths must remain inside the temporary directory.
-- Oversize or unknown-size files fail closed at processing time.
+- The default local size ceiling is 2048 MiB (2 GiB), configurable downward; values above that ceiling are rejected.\n- Media is downloaded to a bounded local file path, not accumulated as one in-memory byte string. The worker validates actual on-disk size before upload.\n- The local size ceiling does not override Rubika server-side upload limits; large-file delivery remains unverified until a private-destination integration test succeeds.\n- Oversize or unknown-size files fail closed at processing time.
 - SQLite is local-first; Supabase is not required and no remote database is provisioned automatically.
 
 ## Known integration risk
