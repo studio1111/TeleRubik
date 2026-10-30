@@ -31,7 +31,14 @@ def fake_rubpy_modules(client):
     signature_module = types.ModuleType("Crypto.Signature")
     signature_module.pkcs1_15 = types.SimpleNamespace(new=Mock(return_value="signing-key"))
 
+    aiohttp_module = types.ModuleType("aiohttp")
+    verified_session = types.SimpleNamespace(close=AsyncMock())
+    aiohttp_module.TCPConnector = Mock(return_value="verified-connector")
+    aiohttp_module.ClientTimeout = Mock(return_value="verified-timeout")
+    aiohttp_module.ClientSession = Mock(return_value=verified_session)
+
     return {
+        "aiohttp": aiohttp_module,
         "rubpy": rubpy_module,
         "rubpy.crypto": crypto_module,
         "Crypto": crypto_package,
@@ -45,6 +52,11 @@ def make_fake_client():
     client.auth = "fake-auth"
     client.private_key = "fake-private-key"
     client.connect = AsyncMock()
+    client.connection = types.SimpleNamespace(
+        session=types.SimpleNamespace(close=AsyncMock()),
+        headers={"user-agent": "test-agent"},
+    )
+    client.timeout = 20
     client.get_me = AsyncMock(
         return_value=types.SimpleNamespace(
             user=types.SimpleNamespace(user_guid="authenticated-user-guid")
@@ -138,6 +150,15 @@ class RubikaSenderTests(unittest.TestCase):
                             name="./private/rubika_session", platform="Android", logger=ANY
                         )
                         fake_client.connect.assert_awaited_once()
+                        fake_client.connection.session.close.assert_awaited_once()
+                        aiohttp_module = rubpy_modules["aiohttp"]
+                        aiohttp_module.TCPConnector.assert_called_once_with(ssl=True, limit=100)
+                        aiohttp_module.ClientTimeout.assert_called_once_with(total=20)
+                        aiohttp_module.ClientSession.assert_called_once_with(
+                            connector="verified-connector",
+                            headers={"user-agent": "test-agent"},
+                            timeout="verified-timeout",
+                        )
                         fake_client.start.assert_not_called()
                         fake_client.get_me.assert_awaited_once()
                         self.assertEqual(fake_client.guid, "authenticated-user-guid")
