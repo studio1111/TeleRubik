@@ -28,7 +28,7 @@ class ChunkedSenderTests(unittest.TestCase):
                     return {"file_id": file_name}
 
                 client.upload = AsyncMock(side_effect=upload)
-                client.send_message = AsyncMock(return_value={"status": "OK"})
+                client.send_message = AsyncMock(return_value={"status": "OK", "status_det": "OK"})
                 sender = RubikaSender("unused-session", "private-destination")
                 sender.client = client
 
