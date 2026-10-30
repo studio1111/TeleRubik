@@ -42,12 +42,30 @@ async def _run(settings: Settings, queue: TransferQueue) -> None:
         logging.warning("Recovered %s interrupted queue job(s)", recovered)
     try: from telethon import TelegramClient
     except ImportError as exc: raise RuntimeError("Telethon is missing; install requirements.txt") from exc
-    settings.telegram_session_path.parent.mkdir(parents=True, exist_ok=True)
     settings.download_dir.mkdir(parents=True, exist_ok=True)
-    client = TelegramClient(str(settings.telegram_session_path), settings.telegram_api_id, settings.telegram_api_hash)
+    if settings.telegram_session_string:
+        from telethon.sessions import StringSession
+
+        telegram_session = StringSession(settings.telegram_session_string)
+    else:
+        settings.telegram_session_path.parent.mkdir(parents=True, exist_ok=True)
+        telegram_session = str(settings.telegram_session_path)
+
+    client = TelegramClient(
+        telegram_session,
+        settings.telegram_api_id,
+        settings.telegram_api_hash,
+    )
     sender = RubikaSender(settings.rubika_session_name, settings.rubika_destination_guid)
-    await client.start()
     try:
+        # Do not call client.start(): it can prompt for phone/code and hang a
+        # non-interactive worker when its Telegram session is missing/expired.
+        await client.connect()
+        if not await client.is_user_authorized():
+            raise RuntimeError(
+                "Telegram session is not authorized; provide a valid local session "
+                "or TELEGRAM_SESSION_STRING"
+            )
         if not settings.dry_run:
             await sender.start()
     except Exception:
@@ -171,6 +189,10 @@ def main() -> int:
             print(f"Source chats configured: {len(settings.telegram_source_chats)}")
             print(f"Max file size: {settings.max_file_size_bytes // (1024 * 1024)} MiB")
             print(f"Dry run: {settings.dry_run}")
+            print(
+                "Telegram session source: "
+                + ("StringSession secret" if settings.telegram_session_string else "local session file")
+            )
         elif args.command == "status":
             print("Queue status")
             for status, count in queue.stats().items(): print(f"{status}: {count}")
