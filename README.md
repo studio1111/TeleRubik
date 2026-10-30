@@ -8,7 +8,9 @@
 
 - Telethon polling of configured Telegram chats, including text-only posts and media captions.
 - Durable, idempotent SQLite queue keyed by source chat and message ID.
-- Bounded retries and recovery of jobs interrupted while processing.\n- SHA-256-verified download cache: failed live uploads retain valid downloads for retry/restart, while successful sends and dry-runs clean them up.
+- Bounded retries and recovery of jobs interrupted while processing.
+- Monotonic per-source Telegram cursors: a bounded initial import is followed by complete incremental scans after restarts or downtime.
+- SHA-256-verified download cache: failed live uploads retain valid downloads for retry/restart, while successful sends and dry-runs clean them up.
 - Filename normalization, file-size limits, download-path boundary checks and dry-run by default.
 - Rubpy user-session upload flow: upload file, then send the uploaded file metadata and original caption.
 - Unit tests and GitHub Actions security/CI workflows.
