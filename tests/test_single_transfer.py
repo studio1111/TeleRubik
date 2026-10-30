@@ -97,6 +97,70 @@ class SingleTransferTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_rejects_empty_media_before_rubika_auth_or_download(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as directory:
+                message = types.SimpleNamespace(
+                    id=1734,
+                    media=object(),
+                    file=types.SimpleNamespace(name="empty.mkv", size=0),
+                    message="caption",
+                )
+                client = types.SimpleNamespace(
+                    connect=AsyncMock(),
+                    is_user_authorized=AsyncMock(return_value=True),
+                    get_entity=AsyncMock(return_value="source"),
+                    get_messages=AsyncMock(return_value=message),
+                    download_media=AsyncMock(),
+                    disconnect=AsyncMock(),
+                )
+                with patch.dict(sys.modules, self._telethon_modules(client)):
+                    with patch("telerubik.single_transfer.RubikaSender") as sender_type:
+                        sender_type.return_value.start = AsyncMock()
+                        sender_type.return_value.close = AsyncMock()
+                        with self.assertRaisesRegex(RuntimeError, "size is missing, invalid"):
+                            await transfer_one(settings_for(directory), "@Animehighbo", 1734, "empty.mkv")
+                        sender_type.return_value.start.assert_not_awaited()
+                        client.download_media.assert_not_awaited()
+                        client.disconnect.assert_awaited_once()
+
+        asyncio.run(scenario())
+
+    def test_sender_close_failure_still_disconnects_telegram(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as directory:
+                message = types.SimpleNamespace(
+                    id=1734,
+                    media=object(),
+                    file=types.SimpleNamespace(name="approved.mkv", size=7),
+                    message="caption",
+                )
+                client = types.SimpleNamespace(
+                    connect=AsyncMock(),
+                    is_user_authorized=AsyncMock(return_value=True),
+                    get_entity=AsyncMock(return_value="source"),
+                    get_messages=AsyncMock(return_value=message),
+                    download_media=AsyncMock(),
+                    disconnect=AsyncMock(),
+                )
+
+                async def download(_message, file):
+                    Path(file).write_bytes(b"1234567")
+                    return file
+
+                client.download_media.side_effect = download
+                with patch.dict(sys.modules, self._telethon_modules(client)):
+                    with patch("telerubik.single_transfer.RubikaSender") as sender_type:
+                        sender = sender_type.return_value
+                        sender.start = AsyncMock()
+                        sender.send_document = AsyncMock()
+                        sender.close = AsyncMock(side_effect=RuntimeError("close failed"))
+                        with self.assertRaisesRegex(RuntimeError, "close failed"):
+                            await transfer_one(settings_for(directory), "@Animehighbo", 1734, "approved.mkv")
+                        client.disconnect.assert_awaited_once()
+
+        asyncio.run(scenario())
+
     def test_rejects_wrong_filename_without_starting_rubika_sender(self):
         async def scenario():
             with tempfile.TemporaryDirectory() as directory:
