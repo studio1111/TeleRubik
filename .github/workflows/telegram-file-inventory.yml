@@ -50,11 +50,7 @@ jobs:
         run: python -m pip install "Telethon==1.42.0"
       - name: Validate scan limit
         run: |
-          python - <<'PY'
-          value = int("${INVENTORY_MESSAGE_LIMIT}")
-          if not 1 <= value <= 10000:
-              raise SystemExit("message_limit must be between 1 and 10000")
-          PY
+          python -c 'import os; value = int(os.environ["INVENTORY_MESSAGE_LIMIT"]); assert 1 <= value <= 10000, "message_limit must be between 1 and 10000"'
       - name: Scan @Animehighbo and create JSON/CSV reports
         run: python -m scripts.telegram_inventory
       - name: Upload inventory reports
