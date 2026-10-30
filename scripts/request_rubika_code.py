@@ -54,6 +54,15 @@ def safe_error_fields(exc: BaseException) -> tuple[str, str]:
     return valid_identifier(status), valid_identifier(detail)
 
 
+class RubikaResponseError(RuntimeError):
+    """A safe wrapper for rejected API responses, retaining only status identifiers."""
+
+    def __init__(self, message: str, response):
+        super().__init__(message)
+        self.status = getattr(response, "status", None)
+        self.status_det = getattr(response, "status_det", None)
+
+
 def _load_crypto_primitives():
     from rubpy.crypto import Crypto
     from Crypto.PublicKey import RSA
@@ -116,7 +125,7 @@ async def authenticate_client(
         )
 
     if getattr(result, "status", None) != "OK":
-        raise RuntimeError("Rubika did not accept the login-code request")
+        raise RubikaResponseError("Rubika did not accept the login-code request", result)
 
     phone_code_hash = getattr(result, "phone_code_hash", None)
     if not isinstance(phone_code_hash, str) or not phone_code_hash:
@@ -135,7 +144,7 @@ async def authenticate_client(
         public_key=public_key,
     )
     if getattr(signed_in, "status", None) != "OK":
-        raise RuntimeError("Rubika did not complete sign-in")
+        raise RubikaResponseError("Rubika did not complete sign-in", signed_in)
 
     encrypted_auth = getattr(signed_in, "auth", None)
     user = getattr(signed_in, "user", None)
