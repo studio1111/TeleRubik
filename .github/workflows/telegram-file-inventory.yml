@@ -29,7 +29,7 @@ jobs:
       TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
       TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
       TELEGRAM_SESSION_STRING: ${{ secrets.TELEGRAM_SESSION_STRING }}
-      INVENTORY_MESSAGE_LIMIT: ${{ inputs.message_limit }}
+      INVENTORY_MESSAGE_LIMIT: ${{ inputs.message_limit || '2000' }}
     steps:
       - name: Check Telegram secrets without exposing values
         shell: bash
