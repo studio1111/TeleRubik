@@ -15,3 +15,11 @@ downloads/
 dist/
 build/
 *.egg-info/
+
+# Rubpy authenticated account sessions and exported secret material
+*.rp
+*.rp-journal
+*.rp-wal
+*.rp-shm
+*.session.b64
+*.rp.b64
