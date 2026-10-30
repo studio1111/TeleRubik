@@ -63,6 +63,18 @@ python -m unittest discover -s tests -v
 python -m compileall -q src tests
 ```
 
+## Isolated one-message transfer
+
+For a controlled test, use `transfer-one` with an exact source chat, Telegram message ID, and expected filename. This command does not scan the channel or drain the general queue; it can only claim the selected source/message pair. It also checks the Telegram file size and available disk space before downloading.
+
+Example (keep dry-run enabled for the first pass):
+
+```bash
+telerubik transfer-one --source-chat @animehighbo --message-id 1734 --expected-filename "Spider-Man.Brand.New.Day.2026.720p.WEB-DL.ValaMovie.mkv"
+```
+
+With `TELERUBIK_DRY_RUN=true`, it downloads and validates only that file, then leaves its queue item pending without sending. A live run requires deliberately setting dry-run to false; the same command remains restricted to that one message. The local 2048 MiB cap does not guarantee that Rubika accepts files of that size. The actual server-side upload limit and timeout behavior must be established by a successful private-destination file test.
+
 ## Security notes
 - Use only sources you are permitted to access and destinations you control or are authorized to post to.
 - Do not commit .env, Telegram session files, Rubika tokens, databases, or downloaded media.
