@@ -32,6 +32,7 @@ class Settings:
     telegram_api_id: int
     telegram_api_hash: str
     telegram_session_path: Path
+    telegram_session_string: str
     telegram_source_chats: tuple[str, ...]
     rubika_bot_token: str
     rubika_destination_guid: str
@@ -68,7 +69,7 @@ class Settings:
         max_mb = _positive_int(values, "TELERUBIK_MAX_FILE_SIZE_MB", MAX_FILE_SIZE_MB)
         if max_mb > MAX_FILE_SIZE_MB:
             raise ConfigurationError(f"TELERUBIK_MAX_FILE_SIZE_MB cannot exceed {MAX_FILE_SIZE_MB} MiB")
-        return cls(api_id, values["TELEGRAM_API_HASH"].strip(), Path(values.get("TELEGRAM_SESSION_PATH", "./private/telegram_session")), chats,
+        return cls(api_id, values["TELEGRAM_API_HASH"].strip(), Path(values.get("TELEGRAM_SESSION_PATH", "./private/telegram_session")), values.get("TELEGRAM_SESSION_STRING", "").strip(), chats,
                    values["RUBIKA_BOT_TOKEN"].strip(), values["RUBIKA_DESTINATION_GUID"].strip(),
                    Path(values.get("TELERUBIK_STATE_DB", "./data/telerubik.sqlite3")), Path(values.get("TELERUBIK_DOWNLOAD_DIR", "./downloads")),
                    max_mb * 1024 * 1024, _positive_int(values, "TELERUBIK_MAX_RETRIES", 3), _positive_int(values, "TELERUBIK_RETRY_BASE_SECONDS", 2),
