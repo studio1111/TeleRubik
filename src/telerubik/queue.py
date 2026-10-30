@@ -1,9 +1,10 @@
 from __future__ import annotations
 import json
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 @dataclass(frozen=True)
 class Job:
@@ -40,12 +41,18 @@ class TransferQueue:
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
             """)
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """Open a transactional SQLite connection and always close it."""
         db = sqlite3.connect(self.db_path, timeout=15)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA foreign_keys = ON")
         db.execute("PRAGMA busy_timeout = 15000")
-        return db
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
     @staticmethod
     def _job(row: sqlite3.Row) -> Job:
         return Job(row["id"], row["source_chat"], row["message_id"], row["filename"], row["caption"], row["status"], row["attempts"], json.loads(row["payload_json"]))
@@ -53,6 +60,15 @@ class TransferQueue:
         with self._connect() as db:
             cursor = db.execute("INSERT OR IGNORE INTO jobs(source_chat,message_id,filename,caption,payload_json) VALUES(?,?,?,?,?)", (str(source_chat), int(message_id), filename, caption, json.dumps(payload or {}, ensure_ascii=False)))
             return cursor.rowcount == 1
+    def iter_pending(self) -> Iterator[Job]:
+        """Yield pending jobs in stable queue order without claiming or mutating them."""
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT * FROM jobs WHERE status='pending' ORDER BY id"
+            )
+            for row in rows:
+                yield self._job(row)
+
     def next_pending(self) -> Job | None:
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
