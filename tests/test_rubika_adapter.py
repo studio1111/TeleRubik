@@ -10,7 +10,7 @@ from unittest.mock import ANY, AsyncMock, Mock, patch
 
 from rubpy.types import Update as RubpyUpdate
 
-from telerubik.adapters import RubikaSender, _validate_authenticated_session
+from telerubik.adapters import RubikaSender, RubikaTransferError, _validate_authenticated_session
 
 
 def fake_rubpy_modules(client):
@@ -168,7 +168,7 @@ class RubikaSenderTests(unittest.TestCase):
                         fake_client.send_message.assert_awaited_once_with(
                             object_guid="destination-guid",
                             text="Episode caption",
-                            file_inline={"file_id": "abc", "access_hash": "xyz"},
+                            file_inline={"file_id": "abc", "access_hash": "xyz", "type": "File"},
                         )
                         await sender.close()
                         fake_client.disconnect.assert_awaited_once()
@@ -200,7 +200,7 @@ class RubikaSenderTests(unittest.TestCase):
                         await sender.send_document(path, "caption")
                         self.assertEqual(
                             fake_client.send_message.await_args.kwargs["file_inline"],
-                            {"file_id": "property-id", "access_hash": "property-hash"},
+                            {"file_id": "property-id", "access_hash": "property-hash", "type": "File"},
                         )
                         await sender.close()
 
@@ -262,8 +262,9 @@ class RubikaSenderTests(unittest.TestCase):
                         path.write_bytes(b"x")
                         sender = RubikaSender("session", "destination")
                         await sender.start()
-                        with self.assertRaisesRegex(RuntimeError, "response detail"):
+                        with self.assertRaises(RubikaTransferError) as caught:
                             await sender.send_document(path, "caption")
+                        self.assertEqual(caught.exception.stage, "message_send")
                         await sender.close()
 
         asyncio.run(scenario())
@@ -281,8 +282,9 @@ class RubikaSenderTests(unittest.TestCase):
                         path.write_bytes(b"x")
                         sender = RubikaSender("session", "destination")
                         await sender.start()
-                        with self.assertRaisesRegex(RuntimeError, "verifiable success result"):
+                        with self.assertRaises(RubikaTransferError) as caught:
                             await sender.send_document(path, "caption")
+                        self.assertEqual(caught.exception.stage, "message_send")
                         await sender.close()
 
         asyncio.run(scenario())
@@ -300,8 +302,9 @@ class RubikaSenderTests(unittest.TestCase):
                         path.write_bytes(b"x")
                         sender = RubikaSender("session", "destination")
                         await sender.start()
-                        with self.assertRaisesRegex(RuntimeError, "no usable file metadata"):
+                        with self.assertRaises(RubikaTransferError) as caught:
                             await sender.send_document(path, "caption")
+                        self.assertEqual(caught.exception.stage, "upload")
                         fake_client.send_message.assert_not_awaited()
                         await sender.close()
 
@@ -342,6 +345,50 @@ class RubikaSenderTests(unittest.TestCase):
                         await sender.send_document(Path("/no/such/file"), "")
                     fake_client.upload.assert_not_awaited()
                     await sender.close()
+
+        asyncio.run(scenario())
+
+
+    def test_upload_failure_is_classified_without_exposing_exception_text(self):
+        async def scenario():
+            fake_client = make_fake_client()
+            fake_client.upload = AsyncMock(side_effect=RuntimeError("private-token-secret"))
+            fake_client.send_message = AsyncMock()
+            rubpy_modules = fake_rubpy_modules(fake_client)
+            with patch.dict(sys.modules, rubpy_modules):
+                with patch("telerubik.adapters._validate_authenticated_session"):
+                    with tempfile.TemporaryDirectory() as directory:
+                        path = Path(directory) / "file.bin"
+                        path.write_bytes(b"x")
+                        sender = RubikaSender("session", "destination")
+                        await sender.start()
+                        with self.assertRaises(RubikaTransferError) as caught:
+                            await sender.send_document(path, "caption")
+                        self.assertEqual(caught.exception.stage, "upload")
+                        self.assertNotIn("private-token-secret", str(caught.exception))
+                        fake_client.send_message.assert_not_awaited()
+                        await sender.close()
+
+        asyncio.run(scenario())
+
+    def test_message_send_failure_is_classified_without_exposing_response(self):
+        async def scenario():
+            fake_client = make_fake_client()
+            fake_client.upload = AsyncMock(return_value={"file_id": "abc"})
+            fake_client.send_message = AsyncMock(side_effect=RuntimeError("sensitive-response-body"))
+            rubpy_modules = fake_rubpy_modules(fake_client)
+            with patch.dict(sys.modules, rubpy_modules):
+                with patch("telerubik.adapters._validate_authenticated_session"):
+                    with tempfile.TemporaryDirectory() as directory:
+                        path = Path(directory) / "file.bin"
+                        path.write_bytes(b"x")
+                        sender = RubikaSender("session", "destination")
+                        await sender.start()
+                        with self.assertRaises(RubikaTransferError) as caught:
+                            await sender.send_document(path, "caption")
+                        self.assertEqual(caught.exception.stage, "message_send")
+                        self.assertNotIn("sensitive-response-body", str(caught.exception))
+                        await sender.close()
 
         asyncio.run(scenario())
 

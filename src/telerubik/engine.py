@@ -128,10 +128,12 @@ class TransferEngine:
             status = self.queue.retry_or_fail(
                 job.id, self.max_retries, type(exc).__name__
             )
+            stage = getattr(exc, "stage", "transfer")
             log.warning(
-                "Transfer job %s %s: %s",
+                "Transfer job %s %s at stage=%s error=%s",
                 job.id,
                 status,
+                stage,
                 type(exc).__name__,
             )
             if status == "pending":
