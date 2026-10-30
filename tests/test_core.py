@@ -8,7 +8,7 @@ from telerubik.config import ConfigurationError, Settings
 from telerubik.cli import _iter_source_messages
 from telerubik.engine import TransferEngine
 from telerubik.queue import TransferQueue
-from telerubik.security import safe_filename, validate_file_size
+from telerubik.security import safe_filename, validate_file_size, write_cache_sidecar
 
 BASE_ENV = {"TELEGRAM_API_ID":"12345", "TELEGRAM_API_HASH":"fake-hash", "TELEGRAM_SOURCE_CHATS":"@allowed_channel, -100123", "RUBIKA_SESSION_NAME":"./private/rubika_session", "RUBIKA_DESTINATION_GUID":"placeholder-guid"}
 
@@ -64,23 +64,109 @@ class QueueTests(unittest.TestCase):
             self.assertEqual(queue.stats()["failed"], 1)
 
 class EngineTests(unittest.TestCase):
-    def test_dry_run_validates_then_cleans_temporary_file_without_sending(self):
+    def test_dry_run_leaves_media_pending_and_live_run_can_send_it(self):
         async def scenario(tmp):
             root = Path(tmp) / "downloads"
             queue = TransferQueue(Path(tmp) / "queue.sqlite3")
-            queue.enqueue("chat", 8, "video.mp4", "caption")
+            queue.enqueue("chat", 8, "video.mp4", "caption", {"text_only": False})
             sent = []
+            preview_locations = []
+
             async def download(job, directory):
-                path = directory / "video.mp4"
+                preview_locations.append(Path(directory))
+                path = Path(directory) / "video.mp4"
                 path.write_bytes(b"test-media")
                 return path
-            async def send(path, caption): sent.append((path, caption))
-            engine = TransferEngine(queue, root, 100, 1, 1, dry_run=True)
-            self.assertTrue(await engine.process_one(download, send))
+
+            async def send(path, caption):
+                sent.append((path.read_bytes(), caption))
+
+            preview = TransferEngine(queue, root, 100, 1, 1, dry_run=True)
+            self.assertEqual(await preview.preview_pending(download), 1)
             self.assertEqual(sent, [])
-            self.assertEqual(queue.stats()["completed"], 1)
+            self.assertEqual(queue.stats()["pending"], 1)
+            self.assertEqual(queue.stats()["processing"], 0)
+            self.assertEqual(queue.stats()["completed"], 0)
             self.assertEqual(list(root.iterdir()), [])
-        with tempfile.TemporaryDirectory() as tmp: asyncio.run(scenario(tmp))
+            self.assertFalse(preview_locations[0].exists())
+
+            # The next live run must still claim and deliver the exact same job.
+            live = TransferEngine(queue, root, 100, 1, 1, dry_run=False)
+            self.assertTrue(await live.process_one(download, send))
+            self.assertEqual(sent, [(b"test-media", "caption")])
+            self.assertEqual(queue.stats()["completed"], 1)
+            self.assertEqual(queue.stats()["pending"], 0)
+            self.assertEqual(list(root.iterdir()), [])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+    def test_dry_run_text_preview_does_not_send_or_consume_job(self):
+        async def scenario(tmp):
+            queue = TransferQueue(Path(tmp) / "queue.sqlite3")
+            queue.enqueue("chat", 11, "telegram-11", "plain text", {"text_only": True})
+            sent = []
+
+            async def download(job, directory):
+                return None
+
+            async def send(path, caption):
+                sent.append((path, caption))
+
+            engine = TransferEngine(queue, Path(tmp) / "downloads", 100, 1, 1, dry_run=True)
+            self.assertEqual(await engine.preview_pending(download), 1)
+            self.assertEqual(sent, [])
+            self.assertEqual(queue.stats()["pending"], 1)
+            self.assertEqual(queue.stats()["completed"], 0)
+            self.assertEqual(queue.stats()["processing"], 0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+    def test_dry_run_cannot_call_mutating_process_one(self):
+        async def scenario(tmp):
+            queue = TransferQueue(Path(tmp) / "queue.sqlite3")
+            queue.enqueue("chat", 12, "file.bin", "caption")
+            engine = TransferEngine(queue, Path(tmp) / "downloads", 100, 1, 1, dry_run=True)
+
+            async def download(job, directory):
+                return None
+
+            async def send(path, caption):
+                self.fail("dry-run must never invoke the sender")
+
+            with self.assertRaisesRegex(RuntimeError, "preview_pending"):
+                await engine.process_one(download, send)
+            self.assertEqual(queue.stats()["pending"], 1)
+            self.assertEqual(queue.stats()["processing"], 0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+    def test_dry_run_does_not_delete_existing_verified_live_retry_cache(self):
+        async def scenario(tmp):
+            root = Path(tmp) / "downloads"
+            root.mkdir()
+            queue = TransferQueue(Path(tmp) / "queue.sqlite3")
+            queue.enqueue("chat", 13, "cached.bin", "caption", {"text_only": False})
+            cached = root / "1-cached.bin"
+            cached.write_bytes(b"verified-cache")
+            sidecar = write_cache_sidecar(cached)
+
+            async def downloader(job, directory):
+                # Deliberately return an existing path to exercise the boundary:
+                # preview must reject it without deleting the live retry cache.
+                return cached
+
+            engine = TransferEngine(queue, root, 100, 1, 1, dry_run=True)
+            self.assertEqual(await engine.preview_pending(downloader), 1)
+            self.assertEqual(cached.read_bytes(), b"verified-cache")
+            self.assertTrue(sidecar.is_file())
+            self.assertEqual(queue.stats()["pending"], 1)
+            self.assertEqual(queue.stats()["completed"], 0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
 
     def test_rejects_download_path_outside_configured_directory(self):
         async def scenario(tmp):
