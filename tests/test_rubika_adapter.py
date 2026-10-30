@@ -262,8 +262,9 @@ class RubikaSenderTests(unittest.TestCase):
                         path.write_bytes(b"x")
                         sender = RubikaSender("session", "destination")
                         await sender.start()
-                        with self.assertRaisesRegex(RuntimeError, "response detail"):
+                        with self.assertRaises(RubikaTransferError) as caught:
                             await sender.send_document(path, "caption")
+                        self.assertEqual(caught.exception.stage, "message_send")
                         await sender.close()
 
         asyncio.run(scenario())
@@ -281,8 +282,9 @@ class RubikaSenderTests(unittest.TestCase):
                         path.write_bytes(b"x")
                         sender = RubikaSender("session", "destination")
                         await sender.start()
-                        with self.assertRaisesRegex(RuntimeError, "verifiable success result"):
+                        with self.assertRaises(RubikaTransferError) as caught:
                             await sender.send_document(path, "caption")
+                        self.assertEqual(caught.exception.stage, "message_send")
                         await sender.close()
 
         asyncio.run(scenario())
@@ -300,8 +302,9 @@ class RubikaSenderTests(unittest.TestCase):
                         path.write_bytes(b"x")
                         sender = RubikaSender("session", "destination")
                         await sender.start()
-                        with self.assertRaisesRegex(RuntimeError, "no usable file metadata"):
+                        with self.assertRaises(RubikaTransferError) as caught:
                             await sender.send_document(path, "caption")
+                        self.assertEqual(caught.exception.stage, "upload")
                         fake_client.send_message.assert_not_awaited()
                         await sender.close()
 
