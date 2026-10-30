@@ -14,6 +14,14 @@ from typing import Any
 from .chunks import DEFAULT_CHUNK_SIZE
 
 
+class RubikaTransferError(RuntimeError):
+    """A sanitized failure tagged with the Rubika transfer phase."""
+
+    def __init__(self, stage: str, reason: str):
+        self.stage = stage
+        super().__init__(f"Rubika {stage} failed: {reason}")
+
+
 async def _resolve(value: Any) -> Any:
     """Accept both awaitable and synchronous Rubpy implementations."""
     return await value if inspect.isawaitable(value) else value
@@ -132,9 +140,9 @@ class RubikaSender:
                     await _resolve(client.disconnect())
                 except Exception:
                     pass
-            raise RuntimeError(
-                f"Rubpy session verification failed ({type(exc).__name__}); "
-                "authenticate the session locally again"
+            raise RubikaTransferError(
+                "authentication",
+                f"session verification failed ({type(exc).__name__}); authenticate the session locally again",
             ) from None
 
     @staticmethod
@@ -163,19 +171,29 @@ class RubikaSender:
         send_method = getattr(self.client, "send_message", None)
         if upload_method is None or send_method is None:
             raise RuntimeError("Installed Rubpy Client lacks upload/send_message; refusing unsafe fallback")
-        uploaded = await _resolve(upload_method(str(path), file_name=path.name))
-        file_inline = self._file_inline(uploaded)
+        try:
+            uploaded = await _resolve(upload_method(str(path), file_name=path.name))
+            file_inline = self._file_inline(uploaded)
+        except Exception as exc:
+            if isinstance(exc, RubikaTransferError):
+                raise
+            raise RubikaTransferError("upload", type(exc).__name__) from None
         # Rubpy 7.3.5 only injects this field when it performs the upload
         # internally from bytes; pre-uploaded metadata bypasses that branch.
         file_inline["type"] = "File"
-        result = await _resolve(
-            send_method(
-                object_guid=self.destination_guid,
-                text=caption.strip() or None,
-                file_inline=file_inline,
+        try:
+            result = await _resolve(
+                send_method(
+                    object_guid=self.destination_guid,
+                    text=caption.strip() or None,
+                    file_inline=file_inline,
+                )
             )
-        )
-        self._validate_send_result(result)
+            self._validate_send_result(result)
+        except Exception as exc:
+            if isinstance(exc, RubikaTransferError):
+                raise
+            raise RubikaTransferError("message_send", type(exc).__name__) from None
         return result
 
     @staticmethod
@@ -316,10 +334,15 @@ class RubikaSender:
         if path is None:
             if not caption.strip():
                 raise RuntimeError("Text-only Telegram post has no text")
-            result = await _resolve(
-                self.client.send_message(object_guid=self.destination_guid, text=caption.strip())
-            )
-            self._validate_send_result(result)
+            try:
+                result = await _resolve(
+                    self.client.send_message(object_guid=self.destination_guid, text=caption.strip())
+                )
+                self._validate_send_result(result)
+            except Exception as exc:
+                if isinstance(exc, RubikaTransferError):
+                    raise
+                raise RubikaTransferError("message_send", type(exc).__name__) from None
             return result
 
         path = Path(path)
