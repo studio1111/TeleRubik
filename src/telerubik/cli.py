@@ -10,7 +10,7 @@ from .adapters import RubikaSender
 from .config import ConfigurationError, Settings
 from .engine import TransferEngine
 from .queue import TransferQueue
-from .security import safe_filename, sha256_file
+from .security import safe_filename, verify_cached_file, write_cache_sidecar
 
 def _build_parser():
     parser = argparse.ArgumentParser(prog="telerubik", description="Transfer authorized Telegram posts and media to Rubika.")
@@ -102,18 +102,9 @@ async def _run(settings: Settings, queue: TransferQueue, single_job: tuple[str, 
 
         # Reuse only a complete cache entry with an integrity sidecar. If a prior
         # process was interrupted during download, discard the incomplete entry.
-        if cached_path.is_file() and sidecar.is_file() and expected_size is not None:
-            try:
-                expected_hash = sidecar.read_text(encoding="ascii").strip()
-                if (
-                    cached_path.stat().st_size == expected_size
-                    and len(expected_hash) == 64
-                    and sha256_file(cached_path) == expected_hash
-                ):
-                    logging.info("Reusing verified cached download job=%s bytes=%s", job.id, expected_size)
-                    return cached_path
-            except (OSError, UnicodeError):
-                pass
+        if verify_cached_file(cached_path, expected_size):
+            logging.info("Reusing verified cached download job=%s bytes=%s", job.id, expected_size)
+            return cached_path
         for stale in (cached_path, sidecar):
             try:
                 stale.unlink()
@@ -128,16 +119,7 @@ async def _run(settings: Settings, queue: TransferQueue, single_job: tuple[str, 
             raise RuntimeError("Telegram downloader returned an unexpected cache path")
         if expected_size is None or cached_path.stat().st_size != expected_size:
             raise RuntimeError("Downloaded file size does not match Telegram metadata")
-        digest = sha256_file(cached_path)
-        temporary_sidecar = sidecar.with_name(sidecar.name + ".tmp")
-        try:
-            temporary_sidecar.write_text(digest + "\n", encoding="ascii")
-            temporary_sidecar.replace(sidecar)
-        finally:
-            try:
-                temporary_sidecar.unlink()
-            except FileNotFoundError:
-                pass
+        write_cache_sidecar(cached_path)
         return cached_path
 
     async def upload(path: Path | None, caption: str, job):
