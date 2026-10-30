@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import ANY, AsyncMock, Mock, patch
 
-from telerubik.adapters import RubikaSender
+from telerubik.adapters import RubikaSender, _validate_authenticated_session
 
 
 def fake_rubpy_modules(client):
@@ -47,6 +47,41 @@ def make_fake_client():
     )
     client.disconnect = AsyncMock()
     return client
+
+
+class RubikaSessionValidationTests(unittest.TestCase):
+    def test_accepts_authenticated_rubpy_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rubika.rp"
+            db = __import__("sqlite3").connect(path)
+            db.executescript(
+                "CREATE TABLE version(version integer primary key);"
+                "INSERT INTO version VALUES (1);"
+                "CREATE TABLE session(phone text, auth text, guid text, agent text, private_key text);"
+                "INSERT INTO session VALUES ('phone', 'auth', 'guid', 'agent', 'private-key');"
+            )
+            db.commit()
+            db.close()
+            self.assertEqual(_validate_authenticated_session(str(path)), path)
+
+    def test_rejects_missing_session_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(RuntimeError, "authenticated Rubpy"):
+                _validate_authenticated_session(str(Path(directory) / "missing.rp"))
+
+    def test_rejects_empty_or_unauthed_session_row(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "empty.rp"
+            db = __import__("sqlite3").connect(path)
+            db.executescript(
+                "CREATE TABLE version(version integer primary key);"
+                "INSERT INTO version VALUES (1);"
+                "CREATE TABLE session(phone text, auth text, guid text, agent text, private_key text);"
+            )
+            db.commit()
+            db.close()
+            with self.assertRaisesRegex(RuntimeError, "not authenticated"):
+                _validate_authenticated_session(str(path))
 
 
 class RubikaSenderTests(unittest.TestCase):
