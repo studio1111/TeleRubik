@@ -130,6 +130,37 @@ class RubikaSenderTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_upload_result_with_to_dict_property_is_forwarded_without_private_attributes(self):
+        class UploadUpdate:
+            def __init__(self):
+                self.client = object()
+                self.original_update = {"file_id": "property-id", "access_hash": "property-hash"}
+
+            @property
+            def to_dict(self):
+                return self.original_update
+
+        async def scenario():
+            fake_client = make_fake_client()
+            fake_client.upload = AsyncMock(return_value=UploadUpdate())
+            fake_client.send_message = AsyncMock(return_value={"status": "OK"})
+            rubpy_modules = fake_rubpy_modules(fake_client)
+            with patch.dict(sys.modules, rubpy_modules):
+                with patch("telerubik.adapters._validate_authenticated_session"):
+                    with tempfile.TemporaryDirectory() as directory:
+                        path = Path(directory) / "file.bin"
+                        path.write_bytes(b"x")
+                        sender = RubikaSender("session", "destination")
+                        await sender.start()
+                        await sender.send_document(path, "caption")
+                        self.assertEqual(
+                            fake_client.send_message.await_args.kwargs["file_inline"],
+                            {"file_id": "property-id", "access_hash": "property-hash"},
+                        )
+                        await sender.close()
+
+        asyncio.run(scenario())
+
     def test_empty_caption_is_sent_as_none(self):
         async def scenario():
             fake_client = make_fake_client()
