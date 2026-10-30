@@ -31,7 +31,12 @@ async def _run(settings: Settings, queue: TransferQueue) -> None:
     client = TelegramClient(str(settings.telegram_session_path), settings.telegram_api_id, settings.telegram_api_hash)
     sender = RubikaSender(settings.rubika_session_name, settings.rubika_destination_guid)
     await client.start()
-    if not settings.dry_run: await sender.start()
+    try:
+        if not settings.dry_run:
+            await sender.start()
+    except Exception:
+        await client.disconnect()
+        raise
 
     async def downloader(job, directory: Path):
         entity = await client.get_entity(_chat_ref(job.source_chat))
@@ -63,7 +68,7 @@ async def _run(settings: Settings, queue: TransferQueue) -> None:
         write_cache_sidecar(downloaded_path)
         return downloaded_path
 
-    async def upload(path: Path, caption: str): await sender.send_document(path, caption)
+    async def upload(path: Path | None, caption: str): await sender.send_document(path, caption)
     engine = TransferEngine(queue, settings.download_dir, settings.max_file_size_bytes, settings.max_retries, settings.retry_base_seconds, settings.dry_run)
     try:
         while True:
