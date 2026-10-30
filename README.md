@@ -50,7 +50,7 @@ telerubik status
 telerubik run
 ```
 
-Dry-run downloads and validates files but does not upload them. For a real test, first verify that the Rubpy session is authenticated and the destination is private; then set `TELERUBIK_DRY_RUN=false`. Do not enable live transfer until the pinned Rubpy API is verified.
+Dry-run downloads and validates files in an isolated temporary directory but does not upload them, claim queue entries, or mark them completed. Pending jobs remain available for a later live run. For a real test, first verify that the Rubpy session is authenticated and the destination is private; then set `TELERUBIK_DRY_RUN=false`. Do not enable live transfer until the pinned Rubpy API is verified.
 
 ## File-size and large-file behavior
 
