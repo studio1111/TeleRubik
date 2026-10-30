@@ -47,25 +47,34 @@ class RubikaSender:
         # Do not mutate library-owned objects.
         return dict(candidate)
 
-    async def send_document(self, path: Path, caption: str) -> Any:
+    async def send_document(self, path: Path | None, caption: str) -> Any:
         if self.client is None:
             raise RuntimeError("Rubika sender has not been started")
-        path = Path(path)
-        if not path.is_file():
-            raise RuntimeError("Upload source file does not exist")
-        upload_method = getattr(self.client, "upload", None)
         send_method = getattr(self.client, "send_message", None)
-        if upload_method is None or send_method is None:
-            raise RuntimeError("Installed Rubpy Client lacks upload/send_message; refusing unsafe fallback")
-        uploaded = await _resolve(upload_method(str(path), file_name=path.name))
-        file_inline = self._file_inline(uploaded)
-        result = await _resolve(
-            send_method(
-                object_guid=self.destination_guid,
-                text=caption.strip() or None,
-                file_inline=file_inline,
+        if send_method is None:
+            raise RuntimeError("Installed Rubpy Client lacks send_message")
+        if path is None:
+            if not caption.strip():
+                raise RuntimeError("Text-only Telegram post has no text")
+            result = await _resolve(
+                send_method(object_guid=self.destination_guid, text=caption.strip())
             )
-        )
+        else:
+            path = Path(path)
+            if not path.is_file():
+                raise RuntimeError("Upload source file does not exist")
+            upload_method = getattr(self.client, "upload", None)
+            if upload_method is None:
+                raise RuntimeError("Installed Rubpy Client lacks upload; refusing unsafe fallback")
+            uploaded = await _resolve(upload_method(str(path), file_name=path.name))
+            file_inline = self._file_inline(uploaded)
+            result = await _resolve(
+                send_method(
+                    object_guid=self.destination_guid,
+                    text=caption.strip() or None,
+                    file_inline=file_inline,
+                )
+            )
         if result is None:
             raise RuntimeError("Rubpy returned no result for send_message")
         status = result.get("status") if isinstance(result, dict) else getattr(result, "status", None)
