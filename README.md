@@ -1,14 +1,14 @@
 # TeleRubik 🚚
 
-**TeleRubik** transfers posts with media from Telegram chats you are authorized to read to a Rubika destination you control. It is independently implemented and borrows the upload pattern observed in Walrus: use a Rubpy **user-account Client**, upload the complete file with `client.upload`, then send the returned metadata with `client.send_message(file_inline=...)`. It does not use the Rubpy BotClient path for media uploads.
+**TeleRubik** transfers text-only posts and posts with media from Telegram chats you are authorized to read to a Rubika destination you control. It is independently implemented and borrows the upload pattern observed in Walrus: use a Rubpy **user-account Client**, upload the complete file with `client.upload`, then send the returned metadata with `client.send_message(file_inline=...)`. It does not use the Rubpy BotClient path for media uploads.
 
 > **Status:** implementation and automated tests are being built on the feature branch. The Rubpy upload method must still be validated against the installed `rubpy==7.3.5` runtime, and a real end-to-end transfer to a private destination has not yet been performed.
 
 ## Current capabilities
 
-- Telethon polling of configured Telegram chats.
+- Telethon polling of configured Telegram chats, including text-only posts and media captions.
 - Durable, idempotent SQLite queue keyed by source chat and message ID.
-- Bounded retries and recovery of jobs interrupted while processing.
+- Bounded retries and recovery of jobs interrupted while processing.\n- SHA-256-verified download cache: failed live uploads retain valid downloads for retry/restart, while successful sends and dry-runs clean them up.
 - Filename normalization, file-size limits, download-path boundary checks and dry-run by default.
 - Rubpy user-session upload flow: upload file, then send the uploaded file metadata and original caption.
 - Unit tests and GitHub Actions security/CI workflows.
@@ -52,7 +52,7 @@ Dry-run downloads and validates files but does not upload them. For a real test,
 
 ## File-size and large-file behavior
 
-The worker currently rejects files larger than `TELERUBIK_MAX_FILE_SIZE_MB` before downloading when Telegram provides the size, and validates the actual downloaded size before upload. The default is 500 MiB. Do not assume that a large file can be sent merely by increasing this setting: actual Rubika server limits and Rubpy's upload behavior must be tested. The local chunk/manifest utility, where present, is not Rubika-native resumable upload and is not automatically sent as one reconstructed file.
+The worker currently rejects files larger than `TELERUBIK_MAX_FILE_SIZE_MB` before downloading when Telegram provides the size, and validates the actual downloaded size before upload. The default is 2048 MiB (2 GiB). Do not assume that a large file can be sent merely by increasing this setting: actual Rubika server limits and Rubpy's upload behavior must be tested. The local chunk/manifest utility, where present, is not Rubika-native resumable upload and is not automatically sent as one reconstructed file.
 
 ## Tests
 
