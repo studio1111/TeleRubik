@@ -50,7 +50,6 @@ jobs:
           python - <<'PY'
           import asyncio
           import os
-          from telerubik.adapters import RubikaSender
 
           async def main():
               token = os.environ.get("RUBIKA_BOT_TOKEN", "").strip()
@@ -60,18 +59,39 @@ jobs:
               if not destination:
                   raise SystemExit("Destination GUID is empty; no message was sent.")
 
-              sender = RubikaSender(token, destination)
               try:
-                  await sender.start()
+                  from rubpy.bot import BotClient
+              except ImportError as exc:
+                  raise SystemExit("Installed rubpy package has no BotClient import; no message was sent.") from exc
+
+              client = BotClient(token=token)
+              try:
+                  starter = getattr(client, "start", None)
+                  if starter is not None:
+                      result = starter()
+                      if hasattr(result, "__await__"):
+                          await result
+
                   message = (
                       "TeleRubik private-destination smoke test. "
                       f"GitHub Actions run: {os.environ['GITHUB_RUN_ID']}. "
                       "This is a single test message."
                   )
-                  await sender.send_message(message)
-                  print("Rubika sender returned successfully. Verify the message in the private destination.")
+                  sender = getattr(client, "send_message", None)
+                  if sender is None:
+                      raise RuntimeError("Installed rubpy BotClient has no send_message method; no message was sent.")
+                  result = sender(destination, message)
+                  if hasattr(result, "__await__"):
+                      await result
+                  print("Rubika BotClient send_message returned successfully. Verify the message in the private destination.")
               finally:
-                  await sender.close()
+                  for name in ("stop", "close", "disconnect"):
+                      closer = getattr(client, name, None)
+                      if closer is not None:
+                          result = closer()
+                          if hasattr(result, "__await__"):
+                              await result
+                          break
 
           asyncio.run(main())
           PY
