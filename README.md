@@ -1,60 +1,66 @@
 # TeleRubik 🚚
 
-**TeleRubik** is an independently implemented, local-first worker for transferring media from Telegram chats you are authorized to read to a configured Rubika destination. It includes a durable SQLite queue, bounded retries, file-size checks, temporary-file cleanup, and CI security checks.
+**TeleRubik** transfers posts with media from Telegram chats you are authorized to read to a Rubika destination you control. It is independently implemented and borrows the upload pattern observed in Walrus: use a Rubpy **user-account Client**, upload the complete file with `client.upload`, then send the returned metadata with `client.send_message(file_inline=...)`. It does not use the Rubpy BotClient path for media uploads.
 
-> **Status:** initial implementation scaffold. The Rubpy upload API still needs runtime verification against the pinned package and an end-to-end test to a private destination. No real transfer has been run from this environment.
+> **Status:** implementation and automated tests are being built on the feature branch. The Rubpy upload method must still be validated against the installed `rubpy==7.3.5` runtime, and a real end-to-end transfer to a private destination has not yet been performed.
 
-## Features
-- Telegram source polling through Telethon.
-- Idempotent queue keyed by Telegram chat and message ID.
-- SQLite state survives restarts; failed jobs have bounded retries.
-- Safe filename normalization, size cap, download path boundary checks and temporary-file cleanup.
-- Dry-run enabled by default; configuration checks never print secrets.
-- Unit tests, GitHub Actions CI, CodeQL and pip-audit workflow.
-- Local-first by default; Supabase is not required and no cloud project is created.
+## Current capabilities
+
+- Telethon polling of configured Telegram chats.
+- Durable, idempotent SQLite queue keyed by source chat and message ID.
+- Bounded retries and recovery of jobs interrupted while processing.
+- Filename normalization, file-size limits, download-path boundary checks and dry-run by default.
+- Rubpy user-session upload flow: upload file, then send the uploaded file metadata and original caption.
+- Unit tests and GitHub Actions security/CI workflows.
+- Local-first state; no paid cloud service is required.
 
 ## Requirements
-- Python 3.11+
-- Telegram API ID and API hash from https://my.telegram.org
-- Rubika bot token and destination chat identifier accepted by Rubpy
-- Access to the Telegram chats you configure
 
-## Setup (Termux or Linux)
+- Python 3.11+
+- Telegram API ID/hash from https://my.telegram.org and permission to read configured chats.
+- A pre-authenticated Rubpy **user-account session** and a destination GUID you control.
+- `rubpy==7.3.5` (pinned in project dependencies).
+
+## Configuration
+
+Copy `.env.example` to `.env` and configure:
+
+- `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`
+- `TELEGRAM_SOURCE_CHATS`, comma-separated
+- `RUBIKA_SESSION_NAME`, path/name for the Rubpy user session
+- `RUBIKA_DESTINATION_GUID`
+- Optional: `TELEGRAM_ALLOWED_USER_IDS`, `TELERUBIK_MAX_FILE_SIZE_MB`, `TELERUBIK_POLL_SECONDS`
+- `TELERUBIK_DRY_RUN=true` initially
+
+Never commit `.env`, Telegram/Rubika session files, tokens, SQLite databases or downloaded media. Session files grant account access and must be handled like passwords. Do not place them in Git history or ordinary workflow artifacts.
+
+## Run locally (Termux or Linux)
+
 ```bash
-# Termux only: pkg update && pkg install python git -y
-# Linux: install Python 3.11+ and Git first
-git clone https://github.com/studio1111/TeleRubik.git
-cd TeleRubik
 python -m venv .venv
 . .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e .
 cp .env.example .env
-nano .env
-```
-Fill required values in `.env`. Never share or commit it. Telegram session data is highly sensitive and is excluded by `.gitignore`.
-
-## First run
-```bash
+# Edit .env locally, keeping all secrets private
 telerubik check
 telerubik status
 telerubik run
 ```
-`TELERUBIK_DRY_RUN=true` is the safe default. It downloads and validates files but does not upload them. After verifying the Rubpy upload method and settings, set it to `false` and test only with a private destination. Stop with Ctrl+C.
 
-## Configuration
-See `.env.example`. Required variables: `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SOURCE_CHATS`, `RUBIKA_BOT_TOKEN`, and `RUBIKA_DESTINATION_GUID`. Source chats are comma-separated. `TELEGRAM_ALLOWED_USER_IDS` optionally filters sender IDs; an empty value means no sender filter, so configure only trusted source chats.
+Dry-run downloads and validates files but does not upload them. For a real test, first verify that the Rubpy session is authenticated and the destination is private; then set `TELERUBIK_DRY_RUN=false`. Do not enable live transfer until the pinned Rubpy API is verified.
+
+## File-size and large-file behavior
+
+The worker currently rejects files larger than `TELERUBIK_MAX_FILE_SIZE_MB` before downloading when Telegram provides the size, and validates the actual downloaded size before upload. The default is 500 MiB. Do not assume that a large file can be sent merely by increasing this setting: actual Rubika server limits and Rubpy's upload behavior must be tested. The local chunk/manifest utility, where present, is not Rubika-native resumable upload and is not automatically sent as one reconstructed file.
 
 ## Tests
+
 ```bash
 python -m unittest discover -s tests -v
 python -m compileall -q src tests
 ```
 
-## Security notes
-- Use only sources you are permitted to access and destinations you control or are authorized to post to.
-- Do not commit `.env`, Telegram session files, Rubika tokens, databases, or downloaded media.
-- The current Rubpy adapter is defensive about API mismatches. Verify `BotClient.send_document` against the pinned release before disabling dry-run.
-- GitHub Actions tests the core but does not authenticate to Telegram or Rubika.
+GitHub Actions can test code but cannot authenticate to your Telegram or Rubika accounts or prove a real transfer. A live test requires authorized session material and a private destination, which must never be posted in an issue or chat.
 
 See [design notes](docs/design.md), [implementation checklist](docs/implementation-plan.md), and [security policy](SECURITY.md).
