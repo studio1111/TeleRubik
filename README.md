@@ -63,6 +63,20 @@ python -m unittest discover -s tests -v
 python -m compileall -q src tests
 ```
 
+## Remote GitHub Actions transfer (phone-free media storage)
+
+A manual workflow, `.github/workflows/remote-single-transfer.yml`, runs the one-message transfer on an ephemeral GitHub-hosted Ubuntu runner. The media file is downloaded only to that remote runner, never to the phone. The workflow is pinned to the approved `@Animehighbo` message `1734` and its exact Spider-Man filename; it cannot scan or drain the general queue. Dry-run is the default. A live send requires deliberately enabling the workflow input `allow_live_send`.
+
+Configure these repository Actions secrets before running it: `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SESSION_STRING` (Telethon StringSession), `RUBIKA_BOT_TOKEN`, and `RUBIKA_DESTINATION_GUID`. The StringSession is sensitive authentication material and must only be stored as a GitHub secret. The runner deletes its temporary download, SQLite state, and workspace session artifacts when the job ends. GitHub-hosted runner disk and job-time limits still apply; this is not an unlimited storage service.
+
+To export the existing authorized Telethon session once on the current Termux setup (this prints a secret; do not paste it into chat or commit it):
+
+```bash
+python -c 'from dotenv import load_dotenv; load_dotenv(); import os; from telethon.sync import TelegramClient; from telethon.sessions import StringSession; c=TelegramClient(os.getenv("TELEGRAM_SESSION_PATH", "./private/telegram_session"), int(os.environ["TELEGRAM_API_ID"]), os.environ["TELEGRAM_API_HASH"]); c.connect(); print(c.session.save()); c.disconnect()'
+```
+
+Copy the printed value directly into the GitHub repository secret named `TELEGRAM_SESSION_STRING`, then clear it from clipboard/history. No media is downloaded by this export step.
+
 ## Isolated one-message transfer
 
 For a controlled test, use `transfer-one` with an exact source chat, Telegram message ID, and expected filename. This command does not scan the channel or drain the general queue; it can only claim the selected source/message pair. It also checks the Telegram file size and available disk space before downloading.
