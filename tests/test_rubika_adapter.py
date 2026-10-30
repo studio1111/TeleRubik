@@ -168,7 +168,7 @@ class RubikaSenderTests(unittest.TestCase):
                         fake_client.send_message.assert_awaited_once_with(
                             object_guid="destination-guid",
                             text="Episode caption",
-                            file_inline={"file_id": "abc", "access_hash": "xyz"},
+                            file_inline={"file_id": "abc", "access_hash": "xyz", "type": "File"},
                         )
                         await sender.close()
                         fake_client.disconnect.assert_awaited_once()
@@ -200,7 +200,7 @@ class RubikaSenderTests(unittest.TestCase):
                         await sender.send_document(path, "caption")
                         self.assertEqual(
                             fake_client.send_message.await_args.kwargs["file_inline"],
-                            {"file_id": "property-id", "access_hash": "property-hash"},
+                            {"file_id": "property-id", "access_hash": "property-hash", "type": "File"},
                         )
                         await sender.close()
 
