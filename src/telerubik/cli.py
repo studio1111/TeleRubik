@@ -9,7 +9,7 @@ from .adapters import RubikaSender
 from .config import ConfigurationError, Settings
 from .engine import TransferEngine
 from .queue import TransferQueue
-from .security import safe_filename
+from .security import cache_sidecar_path, safe_filename, verify_cached_file, write_cache_sidecar
 
 def _build_parser():
     parser = argparse.ArgumentParser(prog="telerubik", description="Transfer authorized Telegram media to Rubika.")
@@ -38,8 +38,30 @@ async def _run(settings: Settings, queue: TransferQueue) -> None:
         message = await client.get_messages(entity, ids=job.message_id)
         if not message or not message.media: return None
         name = safe_filename(getattr(getattr(message, "file", None), "name", None) or job.filename)
-        result = await client.download_media(message, file=str(directory / f"{job.id}-{name}"))
-        return Path(result) if result else None
+        target = (directory / f"{job.id}-{name}").resolve()
+        root = directory.resolve()
+        if root not in target.parents:
+            raise RuntimeError("Resolved Telegram download path escaped the download directory")
+        expected_size = job.payload.get("expected_size")
+        if type(expected_size) is not int or expected_size < 0:
+            expected_size = None
+        if target.exists():
+            if verify_cached_file(target, expected_size):
+                logging.info("Reusing verified cached download for job %s", job.id)
+                return target
+            target.unlink(missing_ok=True)
+            cache_sidecar_path(target).unlink(missing_ok=True)
+        result = await client.download_media(message, file=str(target))
+        if not result:
+            return None
+        downloaded_path = Path(result).resolve()
+        if root not in downloaded_path.parents:
+            raise RuntimeError("Telegram returned a path outside the download directory")
+        if expected_size is not None and downloaded_path.stat().st_size != expected_size:
+            downloaded_path.unlink(missing_ok=True)
+            raise RuntimeError("Downloaded size does not match Telegram metadata")
+        write_cache_sidecar(downloaded_path)
+        return downloaded_path
 
     async def upload(path: Path, caption: str): await sender.send_document(path, caption)
     engine = TransferEngine(queue, settings.download_dir, settings.max_file_size_bytes, settings.max_retries, settings.retry_base_seconds, settings.dry_run)
@@ -53,7 +75,17 @@ async def _run(settings: Settings, queue: TransferQueue) -> None:
                     size = getattr(getattr(message, "file", None), "size", None)
                     if size is not None and size > settings.max_file_size_bytes: continue
                     name = safe_filename(getattr(getattr(message, "file", None), "name", None) or f"telegram-{message.id}")
-                    queue.enqueue(str(chat_ref), int(message.id), name, getattr(message, "message", "") or "", {"source_chat": str(chat_ref), "message_id": int(message.id)})
+                    queue.enqueue(
+                        str(chat_ref),
+                        int(message.id),
+                        name,
+                        getattr(message, "message", "") or "",
+                        {
+                            "source_chat": str(chat_ref),
+                            "message_id": int(message.id),
+                            "expected_size": size if isinstance(size, int) and size >= 0 else None,
+                        },
+                    )
             while await engine.process_one(downloader, upload): pass
             await asyncio.sleep(settings.poll_seconds)
     finally:
