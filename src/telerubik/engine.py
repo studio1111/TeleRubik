@@ -10,7 +10,7 @@ from .security import cache_sidecar_path, safe_filename, sha256_file, validate_f
 
 log = logging.getLogger(__name__)
 Downloader = Callable[[Job, Path], Awaitable[Path | None]]
-Sender = Callable[[Path, str], Awaitable[None]]
+Sender = Callable[[Path | None, str], Awaitable[None]]
 
 
 class TransferEngine:
@@ -37,23 +37,29 @@ class TransferEngine:
         try:
             downloaded = await downloader(job, self.download_dir)
             if downloaded is None:
-                raise RuntimeError("Source message has no downloadable file")
-            path = Path(downloaded).resolve()
-            root = self.download_dir.resolve()
-            if root not in path.parents:
-                raise RuntimeError("Downloader returned a path outside the download directory")
-            if not path.is_file():
-                raise RuntimeError("Downloaded file does not exist")
-            size = path.stat().st_size
-            if not validate_file_size(size, self.max_file_size_bytes):
-                raise RuntimeError("File size exceeds configured limit or is invalid")
-            if self.dry_run:
-                log.info(
-                    "DRY RUN: job=%s name=%s bytes=%s sha256=%s",
-                    job.id, safe_filename(job.filename), size, sha256_file(path),
-                )
+                if job.payload.get("text_only") is not True or not job.caption.strip():
+                    raise RuntimeError("Source message has no downloadable file or text")
+                if self.dry_run:
+                    log.info("DRY RUN: text-only job=%s chars=%s", job.id, len(job.caption))
+                else:
+                    await sender(None, job.caption)
             else:
-                await sender(path, job.caption)
+                path = Path(downloaded).resolve()
+                root = self.download_dir.resolve()
+                if root not in path.parents:
+                    raise RuntimeError("Downloader returned a path outside the download directory")
+                if not path.is_file():
+                    raise RuntimeError("Downloaded file does not exist")
+                size = path.stat().st_size
+                if not validate_file_size(size, self.max_file_size_bytes):
+                    raise RuntimeError("File size exceeds configured limit or is invalid")
+                if self.dry_run:
+                    log.info(
+                        "DRY RUN: job=%s name=%s bytes=%s sha256=%s",
+                        job.id, safe_filename(job.filename), size, sha256_file(path),
+                    )
+                else:
+                    await sender(path, job.caption)
             self.queue.complete(job.id)
             transfer_completed = True
             return True
