@@ -40,6 +40,19 @@ class RubikaSessionRestoreTests(unittest.TestCase):
             self.assertEqual(base64.b64decode(result.read_bytes()), raw)
             self.assertEqual(os.stat(result).st_mode & 0o777, 0o600)
 
+    def test_export_rejects_symlink_destination_without_touching_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.rp"
+            make_session(source)
+            target = root / "keep.txt"
+            target.write_text("keep")
+            output = root / "session.rp.b64"
+            output.symlink_to(target)
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                export_session(source, output)
+            self.assertEqual(target.read_text(), "keep")
+
     def test_export_rejects_non_session_database(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
