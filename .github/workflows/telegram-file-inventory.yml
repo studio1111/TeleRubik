@@ -1,6 +1,10 @@
 name: Telegram file inventory
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/telegram-file-inventory.yml"
   workflow_dispatch:
     inputs:
       message_limit:
@@ -18,6 +22,7 @@ concurrency:
 
 jobs:
   inventory:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[run-inventory]')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
