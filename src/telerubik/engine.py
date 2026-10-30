@@ -3,6 +3,7 @@ import asyncio
 import logging
 from pathlib import Path
 from typing import Awaitable, Callable
+from .errors import PermanentTransferError
 from .queue import Job, TransferQueue
 from .security import safe_filename, sha256_file, validate_file_size
 
@@ -18,16 +19,14 @@ class TransferEngine:
         self.download_dir.mkdir(parents=True, exist_ok=True)
 
     async def process_one(self, downloader: Downloader, sender: Sender, source_chat: str | None = None, message_id: int | None = None) -> bool:
-        """Process one job; when scoped, never claim a different queued message."""
+        """Process one job; upload retries reuse the same validated local download."""
         job = self.queue.next_pending(source_chat=source_chat, message_id=message_id)
         if job is None:
             return False
         path: Path | None = None
         kind = job.payload.get("kind", "media")
-        log.info(
-            "Processing job=%s source=%s message_id=%s kind=%s attempt=%s/%s",
-            job.id, job.source_chat, job.message_id, kind, job.attempts, self.max_retries,
-        )
+        log.info("Processing job=%s source=%s message_id=%s kind=%s attempt=%s/%s",
+                 job.id, job.source_chat, job.message_id, kind, job.attempts, self.max_retries)
         try:
             if kind == "text":
                 if not job.caption.strip():
@@ -55,21 +54,42 @@ class TransferEngine:
                     log.info("DRY RUN: job=%s kind=%s name=%s bytes=%s sha256=%s",
                              job.id, job.payload.get("media_type", "file"),
                              safe_filename(job.filename), path.stat().st_size, sha256_file(path))
-                # A dry run is only a preview. Keep the job pending for a later live run.
                 self.queue.defer(job.id)
                 return False
 
-            log.info("Sending job=%s to configured Rubika destination", job.id)
-            await sender(path, job.caption, job)
+            last_error: Exception | None = None
+            for send_attempt in range(1, self.max_retries + 1):
+                try:
+                    log.info("Sending job=%s to configured Rubika destination (upload attempt %s/%s)",
+                             job.id, send_attempt, self.max_retries)
+                    await sender(path, job.caption, job)
+                    last_error = None
+                    break
+                except PermanentTransferError:
+                    raise
+                except Exception as exc:
+                    last_error = exc
+                    if send_attempt < self.max_retries:
+                        delay = self.retry_base_seconds * min(2 ** (send_attempt - 1), 16)
+                        log.warning("Transient upload failure job=%s attempt=%s/%s; reusing validated download; retry in %ss: %s",
+                                    job.id, send_attempt, self.max_retries, delay, str(exc)[:300])
+                        await asyncio.sleep(delay)
+            if last_error is not None:
+                status = self.queue.retry_or_fail(job.id, job.attempts, f"{type(last_error).__name__}: {last_error}")
+                log.error("Upload exhausted retries job=%s status=%s error=%s", job.id, status, str(last_error)[:300])
+                return True
+
             self.queue.complete(job.id)
             log.info("Transfer completed job=%s source=%s message_id=%s", job.id, job.source_chat, job.message_id)
             return True
+        except PermanentTransferError as exc:
+            status = self.queue.retry_or_fail(job.id, job.attempts, f"{type(exc).__name__}: {exc}")
+            log.error("Permanent transfer failure job=%s status=%s detail=%s", job.id, status, str(exc)[:300])
+            return True
         except Exception as exc:
             status = self.queue.retry_or_fail(job.id, self.max_retries, f"{type(exc).__name__}: {exc}")
-            log.warning(
-                "Transfer job=%s source=%s message_id=%s status=%s error_type=%s detail=%s",
-                job.id, job.source_chat, job.message_id, status, type(exc).__name__, str(exc)[:300],
-            )
+            log.warning("Transfer job=%s source=%s message_id=%s status=%s error_type=%s detail=%s",
+                        job.id, job.source_chat, job.message_id, status, type(exc).__name__, str(exc)[:300])
             if status == "pending":
                 await asyncio.sleep(self.retry_base_seconds * min(2 ** max(0, job.attempts - 1), 16))
             return True

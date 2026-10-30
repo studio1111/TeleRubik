@@ -96,3 +96,6 @@ With `TELERUBIK_DRY_RUN=true`, it downloads and validates only that file, then l
 - GitHub Actions tests the core and adapter routing without authenticating to Telegram or Rubika.
 
 See [design notes](docs/design.md), [implementation checklist](docs/implementation-plan.md), [Termux validation and smoke-test runbook](docs/termux-smoke-test.md), and [security policy](SECURITY.md).
+
+### Large-file upload status
+The pinned Rubpy 7.3.5 BotClient documentation describes `send_file`, `request_send_file`, and `upload_file`, but does not document chunked/resumable uploads or a numeric maximum upload size. HTTP 413 from the current upload endpoint is treated as a permanent rejection, not retried. Temporary upload retries reuse the same runner-local download. TeleRubik does not claim that multi-part upload is supported until Rubika documents or a controlled protocol test proves how uploaded parts are assembled.

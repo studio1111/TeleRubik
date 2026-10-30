@@ -75,6 +75,26 @@ jobs:
           --message-id 1734
           --expected-filename "Spider-Man.Brand.New.Day.2026.720p.WEB-DL.ValaMovie.mkv"
 
+      - name: Verify exactly one live transfer completed
+        if: ${{ inputs.allow_live_send }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import sqlite3
+          from pathlib import Path
+          db_path = Path("data/remote-transfer.sqlite3")
+          if not db_path.is_file():
+              raise SystemExit("Transfer state database is missing; delivery cannot be verified.")
+          with sqlite3.connect(db_path) as db:
+              rows = dict(db.execute("SELECT status, COUNT(*) FROM jobs GROUP BY status"))
+          actual = {key: rows.get(key, 0) for key in ("pending", "processing", "completed", "failed")}
+          expected = {"pending": 0, "processing": 0, "completed": 1, "failed": 0}
+          print(f"Verified isolated transfer state: {actual}")
+          if actual != expected:
+              raise SystemExit(f"Transfer was not successful: expected {expected}, got {actual}")
+          PY
+
       - name: Remove all temporary media and session state
         if: always()
         shell: bash

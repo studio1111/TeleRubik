@@ -146,7 +146,9 @@ async def _run(settings: Settings, queue: TransferQueue, single_job: tuple[str, 
                          source_chat, message_id, actual_filename, size)
             while await engine.process_one(downloader, upload, source_chat=source_chat, message_id=message_id):
                 pass
-            logging.info("Single-transfer pass complete; queue status: %s", queue.stats())
+            stats = queue.stats()
+            logging.info("Single-transfer pass complete; queue status: %s", stats)
+            _validate_single_transfer_result(stats, dry_run=settings.dry_run)
             return
 
         while True:
@@ -213,6 +215,20 @@ async def _run(settings: Settings, queue: TransferQueue, single_job: tuple[str, 
     finally:
         await sender.close()
         await client.disconnect()
+
+def _validate_single_transfer_result(stats: dict[str, int], dry_run: bool) -> None:
+    """Fail closed unless the isolated transfer has the expected terminal state."""
+    expected = (
+        {"pending": 1, "processing": 0, "completed": 0, "failed": 0}
+        if dry_run
+        else {"pending": 0, "processing": 0, "completed": 1, "failed": 0}
+    )
+    actual = {key: int(stats.get(key, 0)) for key in expected}
+    if actual != expected:
+        raise RuntimeError(
+            "Single-transfer did not reach its required state: "
+            f"expected={expected}, actual={actual}. A green process exit is not proof of delivery."
+        )
 
 def main() -> int:
     load_dotenv()

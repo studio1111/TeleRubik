@@ -2,6 +2,7 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 from typing import Any
+from .errors import PermanentTransferError, http_status_code
 from .queue import Job
 
 class RubikaSender:
@@ -43,7 +44,15 @@ class RubikaSender:
         type_map = {"photo": "Image", "video": "Video", "file": "File"}
         rubpy_type = type_map.get(media_type, "File")
         result = method(self.destination_guid, file=str(path), text=caption, file_name=path.name, type=rubpy_type)
-        await self._resolve(result)
+        try:
+            await self._resolve(result)
+        except Exception as exc:
+            if http_status_code(exc) == 413:
+                raise PermanentTransferError(
+                    "Rubika upload endpoint rejected the request with HTTP 413; "
+                    "the current single-request upload path cannot accept this payload."
+                ) from exc
+            raise
 
     async def send_job(self, path: Path | None, caption: str, job: Job) -> None:
         if job.payload.get("kind") == "text":
