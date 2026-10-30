@@ -198,6 +198,46 @@ class RubikaSenderTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_rejects_non_success_status_detail_even_when_status_is_ok(self):
+        async def scenario():
+            fake_client = make_fake_client()
+            fake_client.upload = AsyncMock(return_value={"file_id": "abc"})
+            fake_client.send_message = AsyncMock(
+                return_value={"status": "OK", "status_det": "ERROR"}
+            )
+            rubpy_modules = fake_rubpy_modules(fake_client)
+            with patch.dict(sys.modules, rubpy_modules):
+                with patch("telerubik.adapters._validate_authenticated_session"):
+                    with tempfile.TemporaryDirectory() as directory:
+                        path = Path(directory) / "file.bin"
+                        path.write_bytes(b"x")
+                        sender = RubikaSender("session", "destination")
+                        await sender.start()
+                        with self.assertRaisesRegex(RuntimeError, "response detail"):
+                            await sender.send_document(path, "caption")
+                        await sender.close()
+
+        asyncio.run(scenario())
+
+    def test_rejects_response_without_explicit_success_status(self):
+        async def scenario():
+            fake_client = make_fake_client()
+            fake_client.upload = AsyncMock(return_value={"file_id": "abc"})
+            fake_client.send_message = AsyncMock(return_value={"message_id": "unverified"})
+            rubpy_modules = fake_rubpy_modules(fake_client)
+            with patch.dict(sys.modules, rubpy_modules):
+                with patch("telerubik.adapters._validate_authenticated_session"):
+                    with tempfile.TemporaryDirectory() as directory:
+                        path = Path(directory) / "file.bin"
+                        path.write_bytes(b"x")
+                        sender = RubikaSender("session", "destination")
+                        await sender.start()
+                        with self.assertRaisesRegex(RuntimeError, "explicit success status"):
+                            await sender.send_document(path, "caption")
+                        await sender.close()
+
+        asyncio.run(scenario())
+
     def test_missing_upload_metadata_fails_closed(self):
         async def scenario():
             fake_client = make_fake_client()
