@@ -1,0 +1,28 @@
+name: Rubika session preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-session:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RUBIKA_SESSION_B64: ${{ secrets.RUBIKA_SESSION_B64 }}
+      RUBIKA_SESSION_PATH: private/rubika_session.rp
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Restore and validate private Rubpy session
+        run: python scripts/restore_rubika_session.py
+      - name: Run session restoration regression tests
+        run: python -m unittest tests.test_rubika_session_restore -v
+      - name: Remove session material
+        if: always()
+        run: |
+          rm -f private/rubika_session.rp private/rubika_session.rp-journal
