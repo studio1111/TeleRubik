@@ -30,6 +30,18 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(settings.telegram_source_chats, ("@allowed_channel", "-100123"))
         self.assertEqual(settings.max_retries, 3)
 
+class TelegramSessionConfigTests(unittest.TestCase):
+    def test_uses_optional_string_session_without_echoing_or_changing_it(self):
+        secret = "session-string-secret"
+        settings = Settings.from_env({**BASE_ENV, "TELEGRAM_SESSION_STRING": f"  {secret}  "})
+        self.assertEqual(settings.telegram_session_string, secret)
+
+    def test_empty_string_session_keeps_local_session_file_mode(self):
+        settings = Settings.from_env({**BASE_ENV, "TELEGRAM_SESSION_STRING": "  "})
+        self.assertEqual(settings.telegram_session_string, "")
+        self.assertEqual(settings.telegram_session_path, Path("./private/telegram_session"))
+
+
 class QueueTests(unittest.TestCase):
     def test_enqueue_is_idempotent_and_transitions_are_durable(self):
         with tempfile.TemporaryDirectory() as tmp:
