@@ -113,9 +113,10 @@ class RubikaSenderTests(unittest.TestCase):
                         result = await sender.send_document(path, "Episode caption")
                         self.assertEqual(result, {"status": "OK"})
                         rubpy_modules["rubpy"].Client.assert_called_once_with(
-                            name="./private/rubika_session", logger=ANY
+                            name="./private/rubika_session", platform="Android", logger=ANY
                         )
                         fake_client.connect.assert_awaited_once()
+                        fake_client.start.assert_not_called()
                         fake_client.get_me.assert_awaited_once()
                         self.assertEqual(fake_client.guid, "authenticated-user-guid")
                         fake_client.upload.assert_awaited_once_with(str(path), file_name="episode.mkv")
