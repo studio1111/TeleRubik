@@ -139,7 +139,7 @@ async def _run(settings: Settings, queue: TransferQueue) -> None:
                 # the uncommitted range and the queue deduplicates it.
                 if highest_seen > cursor:
                     queue.set_cursor(source_key, highest_seen)
-                log.info(
+                logging.info(
                     "Source scan chat=%s scanned=%s queued=%s duplicates=%s skipped=%s cursor=%s",
                     source_key, scanned, queued, duplicates, skipped, highest_seen,
                 )
