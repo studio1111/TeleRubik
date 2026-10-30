@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 import inspect
+import json
 import logging
+import math
+import os
 import sqlite3
 import tempfile
 from pathlib import Path
-
-from .chunks import DEFAULT_CHUNK_SIZE, split_file
 from typing import Any
+
+from .chunks import DEFAULT_CHUNK_SIZE
 
 
 async def _resolve(value: Any) -> Any:
@@ -54,7 +58,7 @@ def _validate_authenticated_session(session_name: str) -> Path:
 
 
 class RubikaSender:
-    """Rubpy user-account sender using the Walrus upload-then-send flow.
+    """Rubpy user-account sender using upload-then-send and bounded disk usage.
 
     A pre-authenticated Rubpy session must be provisioned outside this process.
     The session name is a path prefix managed by Rubpy, not a bot token.
@@ -73,9 +77,8 @@ class RubikaSender:
 
         _validate_authenticated_session(self.session_name)
 
-        # Rubpy 7.3.5 logs the entire stored SQLite session at INFO in connect().
-        # Give it an isolated WARNING-only logger so auth/private-key values cannot
-        # leak into the worker's INFO logs.
+        # Rubpy 7.3.5 may log stored session fields at INFO during connect().
+        # Isolate its logger so auth/private-key material cannot reach worker logs.
         logger = logging.getLogger(f"telerubik.rubpy.{id(self)}")
         logger.addHandler(logging.NullHandler())
         logger.setLevel(logging.WARNING)
@@ -124,7 +127,6 @@ class RubikaSender:
                 candidate = getattr(uploaded, "__dict__", None)
         if not isinstance(candidate, dict) or not candidate:
             raise RuntimeError("Rubpy upload returned no usable file metadata")
-        # Do not mutate library-owned objects.
         return dict(candidate)
 
     async def _send_single_document(self, path: Path, caption: str) -> Any:
@@ -157,6 +159,109 @@ class RubikaSender:
         if status is not None and str(status).strip().upper() not in {"OK", "SUCCESS", "SUCCESSFUL"}:
             raise RuntimeError("Rubika rejected the message (non-success response status)")
 
+    async def _send_chunked_document(self, path: Path, caption: str) -> dict[str, Any]:
+        """Upload one bounded-size part at a time, then publish its integrity manifest.
+
+        This avoids materializing a second full-size copy of a large video on disk.
+        Parts remain sequential to preserve deterministic order and avoid flooding
+        the destination with concurrent uploads.
+        """
+        if self.client is None:
+            raise RuntimeError("Rubika sender has not been started")
+        before = path.stat()
+        total_bytes = before.st_size
+        total_parts = max(1, math.ceil(total_bytes / DEFAULT_CHUNK_SIZE))
+        full_digest = hashlib.sha256()
+        parts: list[dict[str, Any]] = []
+        bytes_read = 0
+
+        with tempfile.TemporaryDirectory(prefix="telerubik-chunks-") as temporary:
+            chunk_dir = Path(temporary)
+            with path.open("rb") as source:
+                for index in range(1, total_parts + 1):
+                    part_name = f"{path.name}.part{index:04d}-of-{total_parts:04d}"
+                    part_path = chunk_dir / part_name
+                    part_digest = hashlib.sha256()
+                    part_bytes = 0
+                    remaining = DEFAULT_CHUNK_SIZE
+
+                    with part_path.open("xb") as output:
+                        while remaining:
+                            block = source.read(min(1024 * 1024, remaining))
+                            if not block:
+                                break
+                            output.write(block)
+                            part_digest.update(block)
+                            full_digest.update(block)
+                            part_bytes += len(block)
+                            bytes_read += len(block)
+                            remaining -= len(block)
+                        output.flush()
+                        os.fsync(output.fileno())
+
+                    expected_part_size = min(DEFAULT_CHUNK_SIZE, total_bytes - (index - 1) * DEFAULT_CHUNK_SIZE)
+                    if part_bytes != expected_part_size:
+                        raise RuntimeError("Source file changed or ended during chunk preparation")
+
+                    parts.append({
+                        "index": index,
+                        "filename": part_name,
+                        "size_bytes": part_bytes,
+                        "sha256": part_digest.hexdigest(),
+                    })
+                    part_caption = (
+                        f"{path.name} | PART {index:04d}/{total_parts:04d}\n"
+                        f"Bytes: {part_bytes} | SHA-256: {part_digest.hexdigest()}\n"
+                        "Join parts in ascending order; verify with the manifest."
+                    )
+                    await self._send_single_document(part_path, part_caption)
+                    # Free the part before producing the next one.
+                    part_path.unlink()
+
+                if source.read(1):
+                    raise RuntimeError("Source file grew during chunk transfer")
+
+            after = path.stat()
+            if (
+                bytes_read != total_bytes
+                or after.st_size != before.st_size
+                or after.st_mtime_ns != before.st_mtime_ns
+                or getattr(after, "st_ino", None) != getattr(before, "st_ino", None)
+            ):
+                raise RuntimeError("Source file changed during chunk transfer")
+
+            manifest = {
+                "format": "telerubik-chunks-v1",
+                "original_filename": path.name,
+                "total_bytes": total_bytes,
+                "chunk_size_bytes": DEFAULT_CHUNK_SIZE,
+                "total_parts": total_parts,
+                "sha256": full_digest.hexdigest(),
+                "parts": parts,
+            }
+            manifest_path = chunk_dir / f"{path.name}.manifest.json"
+            with manifest_path.open("x", encoding="utf-8") as output:
+                json.dump(manifest, output, ensure_ascii=False, indent=2)
+                output.write("\n")
+                output.flush()
+                os.fsync(output.fileno())
+
+            manifest_caption = (
+                f"CHUNK MANIFEST: {path.name}\n"
+                f"Parts: {total_parts} | Total bytes: {total_bytes}\n"
+                f"Full-file SHA-256: {full_digest.hexdigest()}\n"
+                "Download all numbered parts and this JSON manifest, then reassemble "
+                "in order and verify SHA-256."
+            )
+            await self._send_single_document(manifest_path, manifest_caption)
+
+        return {
+            "status": "OK",
+            "chunked": True,
+            "parts": total_parts,
+            "sha256": full_digest.hexdigest(),
+        }
+
     async def send_document(self, path: Path | None, caption: str) -> Any:
         if self.client is None:
             raise RuntimeError("Rubika sender has not been started")
@@ -174,31 +279,7 @@ class RubikaSender:
             raise RuntimeError("Upload source file does not exist")
         if path.stat().st_size <= DEFAULT_CHUNK_SIZE:
             return await self._send_single_document(path, caption)
-
-        # Upload numbered chunks sequentially; send the integrity manifest last.
-        # A failed part aborts the sequence so the queue can retry the job.
-        with tempfile.TemporaryDirectory(prefix="telerubik-chunks-") as temporary:
-            chunk_dir = Path(temporary)
-            manifest = split_file(path, chunk_dir, DEFAULT_CHUNK_SIZE)
-            total = manifest["total_parts"]
-            for part in manifest["parts"]:
-                part_path = chunk_dir / part["filename"]
-                part_caption = (
-                    f"{path.name} | PART {part['index']:04d}/{total:04d}\\n"
-                    f"Bytes: {part['size_bytes']} | SHA-256: {part['sha256']}\\n"
-                    "Join parts in ascending order; verify with the manifest."
-                )
-                await self._send_single_document(part_path, part_caption)
-            manifest_path = chunk_dir / f"{path.name}.manifest.json"
-            manifest_caption = (
-                f"CHUNK MANIFEST: {path.name}\\n"
-                f"Parts: {total} | Total bytes: {manifest['total_bytes']}\\n"
-                f"Full-file SHA-256: {manifest['sha256']}\\n"
-                "Download all numbered parts and this JSON manifest, then reassemble "
-                "in order and verify SHA-256."
-            )
-            await self._send_single_document(manifest_path, manifest_caption)
-            return {"status": "OK", "chunked": True, "parts": total, "sha256": manifest["sha256"]}
+        return await self._send_chunked_document(path, caption)
 
     async def close(self) -> None:
         if self.client is None:
