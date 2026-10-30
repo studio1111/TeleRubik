@@ -170,7 +170,14 @@ class RubikaSender:
         if field(result, "error"):
             raise RuntimeError("Rubika returned an error for the message")
         if status is None and status_det is None:
-            raise RuntimeError("Rubika response did not contain an explicit success status")
+            # Rubpy 7.3.5 Builder validates the outer status/status_det pair,
+            # then returns Update(result["data"]); that Update intentionally
+            # contains the message payload, not the outer status fields.
+            payload = getattr(result, "original_update", None)
+            message_id = field(result, "message_id")
+            if isinstance(payload, dict) and message_id:
+                return
+            raise RuntimeError("Rubika response did not contain a verifiable success result")
 
     async def _send_chunked_document(self, path: Path, caption: str) -> dict[str, Any]:
         """Upload one bounded-size part at a time, then publish its integrity manifest.
