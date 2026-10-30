@@ -52,8 +52,9 @@ def make_fake_client():
     client.auth = "fake-auth"
     client.private_key = "fake-private-key"
     client.connect = AsyncMock()
+    client.original_session = types.SimpleNamespace(close=AsyncMock())
     client.connection = types.SimpleNamespace(
-        session=types.SimpleNamespace(close=AsyncMock()),
+        session=client.original_session,
         headers={"user-agent": "test-agent"},
     )
     client.timeout = 20
@@ -150,7 +151,7 @@ class RubikaSenderTests(unittest.TestCase):
                             name="./private/rubika_session", platform="Android", logger=ANY
                         )
                         fake_client.connect.assert_awaited_once()
-                        fake_client.connection.session.close.assert_awaited_once()
+                        fake_client.original_session.close.assert_awaited_once()
                         aiohttp_module = rubpy_modules["aiohttp"]
                         aiohttp_module.TCPConnector.assert_called_once_with(ssl=True, limit=100)
                         aiohttp_module.ClientTimeout.assert_called_once_with(total=20)
