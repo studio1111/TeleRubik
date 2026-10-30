@@ -143,7 +143,17 @@ async def _run(settings: Settings, queue: TransferQueue) -> None:
                     "Source scan chat=%s scanned=%s queued=%s duplicates=%s skipped=%s cursor=%s",
                     source_key, scanned, queued, duplicates, skipped, highest_seen,
                 )
-            while await engine.process_one(downloader, upload): pass
+            if settings.dry_run:
+                previewed = await engine.preview_pending(downloader)
+                logging.info(
+                    "DRY RUN complete: previewed=%s queue=%s; all jobs remain pending",
+                    previewed,
+                    queue.stats(),
+                )
+            else:
+                while await engine.process_one(downloader, upload):
+                    pass
+                logging.info("Transfer pass complete; queue status: %s", queue.stats())
             await asyncio.sleep(settings.poll_seconds)
     finally:
         await sender.close()
