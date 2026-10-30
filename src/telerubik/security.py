@@ -26,3 +26,39 @@ def sha256_file(path: str | Path, chunk_size: int = 1024 * 1024) -> str:
 
 def validate_file_size(size: int | None, max_bytes: int) -> bool:
     return size is not None and size >= 0 and max_bytes > 0 and size <= max_bytes
+
+
+
+def verify_cached_file(path: str | Path, expected_size: int | None) -> bool:
+    """Return true only for a size-matching cache entry with a matching SHA-256 sidecar."""
+    cached = Path(path)
+    if expected_size is None or expected_size < 0 or not cached.is_file():
+        return False
+    sidecar = cached.with_name(cached.name + ".sha256")
+    try:
+        expected_hash = sidecar.read_text(encoding="ascii").strip()
+        return (
+            cached.stat().st_size == expected_size
+            and len(expected_hash) == 64
+            and all(ch in "0123456789abcdef" for ch in expected_hash)
+            and sha256_file(cached) == expected_hash
+        )
+    except (OSError, UnicodeError):
+        return False
+
+
+def write_cache_sidecar(path: str | Path) -> str:
+    """Atomically persist the SHA-256 of a completed download beside the media."""
+    cached = Path(path)
+    sidecar = cached.with_name(cached.name + ".sha256")
+    temporary = sidecar.with_name(sidecar.name + ".tmp")
+    digest = sha256_file(cached)
+    try:
+        temporary.write_text(digest + "\n", encoding="ascii")
+        temporary.replace(sidecar)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+    return digest
