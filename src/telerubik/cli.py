@@ -79,7 +79,13 @@ async def _run(settings: Settings, queue: TransferQueue, single_job: tuple[str, 
         raise RuntimeError("Telethon is missing; install requirements.txt") from exc
     settings.telegram_session_path.parent.mkdir(parents=True, exist_ok=True)
     settings.download_dir.mkdir(parents=True, exist_ok=True)
-    client = TelegramClient(str(settings.telegram_session_path), settings.telegram_api_id, settings.telegram_api_hash)
+    if settings.telegram_session_string:
+        from telethon.sessions import StringSession
+        telegram_session = StringSession(settings.telegram_session_string)
+        logging.info("Using ephemeral Telegram StringSession from environment.")
+    else:
+        telegram_session = str(settings.telegram_session_path)
+    client = TelegramClient(telegram_session, settings.telegram_api_id, settings.telegram_api_hash)
     sender = RubikaSender(settings.rubika_bot_token, settings.rubika_destination_guid)
 
     async def downloader(job, directory: Path):
