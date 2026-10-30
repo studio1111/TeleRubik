@@ -169,6 +169,8 @@ class RubikaSender:
             raise RuntimeError("Rubika rejected the message (non-success response detail)")
         if field(result, "error"):
             raise RuntimeError("Rubika returned an error for the message")
+        if (status is None) != (status_det is None):
+            raise RuntimeError("Rubika response contained an incomplete success status pair")
         if status is None and status_det is None:
             # Rubpy 7.3.5 Builder validates the outer status/status_det pair,
             # then returns Update(result["data"]); that Update intentionally
