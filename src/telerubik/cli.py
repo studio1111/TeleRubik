@@ -13,7 +13,13 @@ from .security import cache_sidecar_path, safe_filename, verify_cached_file, wri
 
 def _build_parser():
     parser = argparse.ArgumentParser(prog="telerubik", description="Transfer authorized Telegram media to Rubika.")
-    parser.add_argument("command", choices=("check", "status", "run"))
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    for command in ("check", "status", "run"):
+        subparsers.add_parser(command)
+    transfer = subparsers.add_parser("transfer-one", help="Transfer exactly one approved Telegram message")
+    transfer.add_argument("--source-chat", required=True)
+    transfer.add_argument("--message-id", required=True, type=int)
+    transfer.add_argument("--expected-filename", required=True)
     return parser
 
 def _chat_ref(value: str):
@@ -196,6 +202,9 @@ def main() -> int:
         elif args.command == "status":
             print("Queue status")
             for status, count in queue.stats().items(): print(f"{status}: {count}")
+        elif args.command == "transfer-one":
+            from .single_transfer import transfer_one
+            asyncio.run(transfer_one(settings, args.source_chat, args.message_id, args.expected_filename))
         else: asyncio.run(_run(settings, queue))
         return 0
     except (ConfigurationError, RuntimeError) as exc:
