@@ -2,7 +2,7 @@
 
 **TeleRubik** is a local-first worker for transferring posts and downloadable media from Telegram chats you are authorized to read to a configured Rubika destination. It uses a durable SQLite queue, bounded retries, file-size checks, temporary-file cleanup, and CI security checks.
 
-> **Status:** Text/photo/video/file routing is implemented. The Rubpy 7.3.5 BotClient.send_message and BotClient.send_file signatures were checked against the official documentation. CI, dependency audit, and CodeQL pass for the current feature branch. No authenticated end-to-end transfer to Rubika has been run from this environment, so keep dry-run enabled until testing with a private destination.
+> **Status:** Text/photo/video/file routing and restart-safe local media caching are implemented. The Rubpy 7.3.5 BotClient API is used for delivery. Current-head CI must be checked in GitHub Actions; no successful authenticated end-to-end file transfer to Rubika has been verified from this environment. Keep dry-run enabled until testing with a private destination.
 
 ## Features
 - Telegram source polling through Telethon.
@@ -73,7 +73,7 @@ Example (keep dry-run enabled for the first pass):
 telerubik transfer-one --source-chat @animehighbo --message-id 1734 --expected-filename "Spider-Man.Brand.New.Day.2026.720p.WEB-DL.ValaMovie.mkv"
 ```
 
-With `TELERUBIK_DRY_RUN=true`, it downloads and validates only that file, then leaves its queue item pending without sending. A live run requires deliberately setting dry-run to false; the same command remains restricted to that one message. The local 2048 MiB cap does not guarantee that Rubika accepts files of that size. The actual server-side upload limit and timeout behavior must be established by a successful private-destination file test.
+With `TELERUBIK_DRY_RUN=true`, it downloads and validates only that file, then leaves its queue item pending without sending. A live run requires deliberately setting dry-run to false; the same command remains restricted to that one message. The local 2048 MiB cap does not guarantee that Rubika accepts files of that size. The actual server-side upload limit and timeout behavior must be established by a successful private-destination file test. A validated file is retained in the local downloads directory after a failed live upload for diagnosis/retry, so check available disk space and remove only files you no longer need. Media and databases are deliberately not committed to GitHub or stored as repository artifacts.
 
 ## Security notes
 - Use only sources you are permitted to access and destinations you control or are authorized to post to.
