@@ -17,7 +17,10 @@ def fake_rubpy_modules(client):
     rubpy_module.Client = Mock(return_value=client)
 
     crypto_module = types.ModuleType("rubpy.crypto")
-    crypto_module.Crypto = types.SimpleNamespace(decode_auth=Mock(return_value="decoded-auth"))
+    crypto_module.Crypto = types.SimpleNamespace(
+        decode_auth=Mock(return_value="decoded-auth"),
+        passphrase=Mock(return_value="derived-session-key"),
+    )
 
     crypto_package = types.ModuleType("Crypto")
     crypto_package.__path__ = []
@@ -100,6 +103,14 @@ class RubikaSenderTests(unittest.TestCase):
     def test_upload_then_send_uses_uploaded_file_metadata_and_caption(self):
         async def scenario():
             fake_client = make_fake_client()
+
+            async def verify_key_before_api_call():
+                self.assertEqual(fake_client.key, "derived-session-key")
+                return types.SimpleNamespace(
+                    user=types.SimpleNamespace(user_guid="authenticated-user-guid")
+                )
+
+            fake_client.get_me.side_effect = verify_key_before_api_call
             fake_client.upload = AsyncMock(return_value={"file_id": "abc", "access_hash": "xyz"})
             fake_client.send_message = AsyncMock(return_value={"status": "OK"})
             rubpy_modules = fake_rubpy_modules(fake_client)
@@ -119,6 +130,7 @@ class RubikaSenderTests(unittest.TestCase):
                         fake_client.start.assert_not_called()
                         fake_client.get_me.assert_awaited_once()
                         self.assertEqual(fake_client.guid, "authenticated-user-guid")
+                        rubpy_modules["rubpy.crypto"].Crypto.passphrase.assert_called_once_with("fake-auth")
                         fake_client.upload.assert_awaited_once_with(str(path), file_name="episode.mkv")
                         fake_client.send_message.assert_awaited_once_with(
                             object_guid="destination-guid",
