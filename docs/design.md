@@ -22,7 +22,7 @@ Telegram client (Telethon) -> source chat/user filters -> SQLite idempotent queu
 - SQLite is local-first; Supabase is not required and no remote database is provisioned automatically.
 
 ## Known integration risk
-Rubpy changes independently. Verify BotClient.send_document argument compatibility against the pinned version and test with a private destination before production use. The adapter raises an explicit error if the method is absent. Do not turn off dry-run until upload behavior is verified.
+Rubpy changes independently. The adapter targets the pinned user-account Client API: authenticate an existing SQLite session, call `Client.upload(...)`, then pass the returned file metadata to `Client.send_message(file_inline=...)`. Tests validate the adapter contract, session preflight and failure behavior, but they do not prove a real network upload. Keep dry-run enabled until a private-destination end-to-end test confirms text and media delivery.
 
 
 ## Incremental source scanning
