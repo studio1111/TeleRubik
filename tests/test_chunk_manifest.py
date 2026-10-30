@@ -55,6 +55,28 @@ class ChunkingTests(unittest.TestCase):
             with self.assertRaises(ChunkingError):
                 reassemble_file(manifest, root / "out.bin")
 
+    def test_split_rejects_source_inside_parts_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parts = root / "parts"
+            parts.mkdir()
+            source = parts / "part-000001.bin"
+            source.write_bytes(b"original source bytes")
+
+            with self.assertRaisesRegex(ChunkingError, "must not be inside"):
+                split_file(source, parts, chunk_size=4)
+
+    def test_reassembly_rejects_invalid_manifest_field_types(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.bin"
+            source.write_bytes(b"safe")
+            manifest = split_file(source, root / "parts", chunk_size=4)
+            manifest["size"] = "4"
+
+            with self.assertRaisesRegex(ChunkingError, "size"):
+                reassemble_file(manifest, root / "out.bin")
+
 
 if __name__ == "__main__":
     unittest.main()
