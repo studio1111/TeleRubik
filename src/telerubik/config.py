@@ -6,6 +6,9 @@ from pathlib import Path
 class ConfigurationError(ValueError):
     pass
 
+
+MAX_FILE_SIZE_MB = 2048
+
 def _bool_value(env: dict[str, str], key: str, default: str) -> bool:
     value = env.get(key, default).strip().lower()
     if value in {"1", "true", "yes", "on"}:
@@ -62,7 +65,9 @@ class Settings:
             allowed = frozenset(int(item.strip()) for item in values.get("TELEGRAM_ALLOWED_USER_IDS", "").split(",") if item.strip())
         except ValueError as exc:
             raise ConfigurationError("TELEGRAM_ALLOWED_USER_IDS must contain numeric IDs") from exc
-        max_mb = _positive_int(values, "TELERUBIK_MAX_FILE_SIZE_MB", 500)
+        max_mb = _positive_int(values, "TELERUBIK_MAX_FILE_SIZE_MB", MAX_FILE_SIZE_MB)
+        if max_mb > MAX_FILE_SIZE_MB:
+            raise ConfigurationError(f"TELERUBIK_MAX_FILE_SIZE_MB cannot exceed {MAX_FILE_SIZE_MB} MiB")
         return cls(api_id, values["TELEGRAM_API_HASH"].strip(), Path(values.get("TELEGRAM_SESSION_PATH", "./private/telegram_session")), chats,
                    values["RUBIKA_BOT_TOKEN"].strip(), values["RUBIKA_DESTINATION_GUID"].strip(),
                    Path(values.get("TELERUBIK_STATE_DB", "./data/telerubik.sqlite3")), Path(values.get("TELERUBIK_DOWNLOAD_DIR", "./downloads")),
