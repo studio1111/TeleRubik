@@ -7,7 +7,7 @@ from telerubik.engine import TransferEngine
 from telerubik.queue import TransferQueue
 from telerubik.security import safe_filename, validate_file_size
 
-BASE_ENV = {"TELEGRAM_API_ID":"12345", "TELEGRAM_API_HASH":"fake-hash", "TELEGRAM_SOURCE_CHATS":"@allowed_channel, -100123", "RUBIKA_BOT_TOKEN":"placeholder-token", "RUBIKA_DESTINATION_GUID":"placeholder-guid"}
+BASE_ENV = {"TELEGRAM_API_ID":"12345", "TELEGRAM_API_HASH":"fake-hash", "TELEGRAM_SOURCE_CHATS":"@allowed_channel, -100123", "RUBIKA_SESSION_NAME":"./private/rubika_session", "RUBIKA_DESTINATION_GUID":"placeholder-guid"}
 
 class SecurityTests(unittest.TestCase):
     def test_filename_drops_path_traversal(self): self.assertEqual(safe_filename("../../../../etc/passwd"), "passwd")
