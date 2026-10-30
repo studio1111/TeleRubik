@@ -19,6 +19,24 @@ async def _resolve(value: Any) -> Any:
     return await value if inspect.isawaitable(value) else value
 
 
+async def _enable_verified_rubpy_transport(client: Any) -> None:
+    """Replace Rubpy 7.3.5's TLS-verification-disabled session before API use."""
+    import aiohttp
+
+    connection = getattr(client, "connection", None)
+    old_session = getattr(connection, "session", None)
+    headers = getattr(connection, "headers", None)
+    if old_session is None or not isinstance(headers, dict):
+        raise RuntimeError("Rubpy did not expose the expected network session")
+
+    await _resolve(old_session.close())
+    connection.session = aiohttp.ClientSession(
+        connector=aiohttp.TCPConnector(ssl=True, limit=100),
+        headers=headers,
+        timeout=aiohttp.ClientTimeout(total=client.timeout),
+    )
+
+
 def _validate_authenticated_session(session_name: str) -> Path:
     """Check the local Rubpy SQLite session before starting a non-interactive worker."""
     name = Path(session_name).expanduser()
@@ -87,6 +105,7 @@ class RubikaSender:
         self.client = Client(name=self.session_name, platform="Android", logger=logger)
         try:
             await _resolve(self.client.connect())
+            await _enable_verified_rubpy_transport(self.client)
             if not self.client.auth or not self.client.private_key:
                 raise RuntimeError("Rubpy session does not contain authentication material")
 
