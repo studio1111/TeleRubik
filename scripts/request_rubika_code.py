@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import re
 from getpass import getpass
-from typing import Any
 
 
 def normalize_international_phone(value: str) -> str:
