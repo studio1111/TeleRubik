@@ -6,7 +6,12 @@
 - [x] Implement durable idempotent SQLite queue and retry states.
 - [x] Implement bounded transfer orchestration and temporary-file cleanup.
 - [x] Implement Telegram polling and a Rubpy user-session upload adapter.
-- [x] Use the Walrus-style flow: upload complete file, then send returned metadata with the original caption.\n- [x] Support text-only posts and media captions.\n- [x] Persist failed-upload downloads with SHA-256 sidecars and verify them before reuse.
+- [x] Use the Walrus-style user-account flow: upload complete file, then send returned metadata with the original caption.
+- [x] Support text-only posts and media captions.
+- [x] Persist failed-upload downloads with SHA-256 sidecars and verify them before reuse.
+- [x] Validate the local authenticated Rubpy SQLite session before non-interactive worker startup.
+- [x] Suppress Rubpy session logging and keep raw API exception messages out of persistent queue state.
+- [x] Persist monotonic per-source Telegram cursors so subsequent scans do not stop at the initial lookback window.
 - [x] Add adapter tests for upload/send order, empty captions, missing metadata and missing files.
 - [x] Document the user-session requirement and keep secrets/session files out of Git.
 - [x] Keep live sending disabled by default.
