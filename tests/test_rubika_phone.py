@@ -11,6 +11,7 @@ from scripts.request_rubika_code import (
     _validate_session_target,
     authenticate_client,
     normalize_international_phone,
+    RubikaResponseError,
     safe_error_fields,
 )
 
@@ -173,6 +174,46 @@ class RubikaTwoStepLoginTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.session.inserted["guid"], "user-guid")
         self.assertEqual([call[0] for call in client.calls][-2:], ["register_device", "get_me"])
         self.assertEqual(len(prompts), 2)
+
+    async def test_rejected_two_step_password_exposes_only_safe_api_status(self):
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+                self.results = [
+                    SimpleNamespace(status="SendPassKey"),
+                    SimpleNamespace(status="ERROR_GENERIC", status_det="INVALID_PASS_KEY"),
+                ]
+
+            async def send_code(self, **kwargs):
+                self.calls.append(kwargs)
+                return self.results.pop(0)
+
+        password_prompts = []
+        code_prompts = []
+
+        def password_prompt(label):
+            password_prompts.append(label)
+            return "wrong-password"
+
+        def code_prompt(label):
+            code_prompts.append(label)
+            raise AssertionError("OTP must not be requested after a rejected pass key")
+
+        client = FakeClient()
+        with self.assertRaisesRegex(RubikaResponseError, "did not accept"):
+            await authenticate_client(client, "491234567890", password_prompt, code_prompt)
+
+        self.assertEqual(len(client.calls), 2)
+        self.assertEqual(client.calls[1]["pass_key"], "wrong-password")
+        self.assertEqual(len(password_prompts), 1)
+        self.assertEqual(code_prompts, [])
+        self.assertEqual(
+            safe_error_fields(RubikaResponseError(
+                "rejected",
+                SimpleNamespace(status="ERROR_GENERIC", status_det="INVALID_PASS_KEY"),
+            )),
+            ("ERROR_GENERIC", "INVALID_PASS_KEY"),
+        )
 
     async def test_empty_two_step_password_stops_before_second_request(self):
         class FakeClient:
