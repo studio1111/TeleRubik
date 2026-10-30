@@ -24,6 +24,8 @@ class TransferEngine:
         if job is None:
             return False
         path: Path | None = None
+        download_validated = False
+        send_succeeded = False
         kind = job.payload.get("kind", "media")
         log.info("Processing job=%s source=%s message_id=%s kind=%s attempt=%s/%s",
                  job.id, job.source_chat, job.message_id, kind, job.attempts, self.max_retries)
@@ -45,7 +47,8 @@ class TransferEngine:
                 size = path.stat().st_size
                 if not validate_file_size(size, self.max_file_size_bytes):
                     raise RuntimeError("File size exceeds configured limit or is invalid")
-                log.info("Download validated for job=%s bytes=%s", job.id, size)
+                download_validated = True
+                log.info("Download validated for job=%s bytes=%s sha256=%s", job.id, size, sha256_file(path))
 
             if self.dry_run:
                 if path is None:
@@ -80,6 +83,7 @@ class TransferEngine:
                 return True
 
             self.queue.complete(job.id)
+            send_succeeded = True
             log.info("Transfer completed job=%s source=%s message_id=%s", job.id, job.source_chat, job.message_id)
             return True
         except PermanentTransferError as exc:
@@ -96,8 +100,17 @@ class TransferEngine:
         finally:
             if path is not None:
                 try:
-                    if self.download_dir.resolve() in path.parents and path.is_file():
-                        path.unlink()
-                        log.debug("Removed temporary file for job=%s", job.id)
+                    if self.download_dir.resolve() in path.parents:
+                        # Keep validated media after upload failure for restart-safe retries.
+                        # Dry-runs and invalid downloads remain disposable.
+                        if self.dry_run or not download_validated or send_succeeded:
+                            if path.is_file():
+                                path.unlink()
+                            sidecar = path.with_name(path.name + ".sha256")
+                            if sidecar.is_file():
+                                sidecar.unlink()
+                            log.debug("Removed temporary file for job=%s", job.id)
+                        else:
+                            log.warning("Retaining validated media cache after failed upload job=%s path=%s", job.id, path.name)
                 except OSError:
                     log.warning("Could not remove temporary file for job %s", job.id)
