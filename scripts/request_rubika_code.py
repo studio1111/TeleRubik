@@ -11,7 +11,7 @@ from getpass import getpass
 
 
 def normalize_international_phone(value: str) -> str:
-    """Return the digits-only E.164 number expected by Rubpy's sendCode API."""
+    """Return the digits-only international number expected by Rubpy's sendCode API."""
     if not isinstance(value, str):
         raise ValueError("Phone number must be text")
     value = value.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789"))
@@ -28,20 +28,38 @@ def normalize_international_phone(value: str) -> str:
 
 
 def safe_error_fields(exc: BaseException) -> tuple[str, str]:
-    """Extract only non-sensitive API error identifiers, never raw response data."""
+    """Extract only known API error identifiers; never expose raw exception text."""
     status = getattr(exc, "status", None)
     detail = getattr(exc, "status_det", None)
     for candidate in getattr(exc, "args", ()):
         if isinstance(candidate, dict):
             status = status or candidate.get("status")
             detail = detail or candidate.get("status_det")
-    return str(status or "unknown"), str(detail or "unknown")
+        elif isinstance(candidate, str):
+            # Rubpy 7.3.5 may stringify its response dictionary in the exception.
+            status_match = re.search(r"""['"]status['"]\s*:\s*['"]([A-Z0-9_]{1,64})['"]""", candidate)
+            detail_match = re.search(r"""['"]status_det['"]\s*:\s*['"]([A-Z0-9_]{1,64})['"]""", candidate)
+            status = status or (status_match.group(1) if status_match else None)
+            detail = detail or (detail_match.group(1) if detail_match else None)
+
+    def valid_identifier(value: object) -> str:
+        text_value = str(value or "")
+        return text_value if re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", text_value) else "unknown"
+
+    return valid_identifier(status), valid_identifier(detail)
 
 
 async def main() -> int:
     from rubpy import Client
 
-    phone = normalize_international_phone(getpass("International phone number (hidden): ").strip())
+    try:
+        phone = normalize_international_phone(
+            getpass("International phone number (hidden): ").strip()
+        )
+    except ValueError as exc:
+        print("Input error:", str(exc))
+        return 2
+
     client = Client(
         name="private/rubika_session",
         platform="Android",
