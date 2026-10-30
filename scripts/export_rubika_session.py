@@ -8,6 +8,7 @@ import argparse
 import base64
 import os
 import sqlite3
+import tempfile
 from pathlib import Path
 
 
@@ -41,13 +42,30 @@ def export_session(source: Path, destination: Path) -> Path:
         connection.close()
 
     destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.is_symlink():
+        raise ValueError("Refusing to write session export through a symlink")
     encoded = base64.b64encode(source.read_bytes())
-    fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as stream:
-        stream.write(encoded)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.chmod(destination, 0o600)
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".tmp", dir=str(destination.parent)
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # Re-check before replacement. os.replace replaces a link itself rather
+        # than following it, but refusing it is clearer and avoids surprises.
+        if destination.is_symlink():
+            raise ValueError("Refusing to replace a symlink session export")
+        os.replace(temporary, destination)
+        os.chmod(destination, 0o600)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
     return destination
 
 
