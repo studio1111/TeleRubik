@@ -1,15 +1,40 @@
 from __future__ import annotations
 
+import hashlib
 import inspect
+import json
 import logging
+import math
+import os
 import sqlite3
+import tempfile
 from pathlib import Path
 from typing import Any
+
+from .chunks import DEFAULT_CHUNK_SIZE
 
 
 async def _resolve(value: Any) -> Any:
     """Accept both awaitable and synchronous Rubpy implementations."""
     return await value if inspect.isawaitable(value) else value
+
+
+async def _enable_verified_rubpy_transport(client: Any) -> None:
+    """Replace Rubpy 7.3.5's TLS-verification-disabled session before API use."""
+    import aiohttp
+
+    connection = getattr(client, "connection", None)
+    old_session = getattr(connection, "session", None)
+    headers = getattr(connection, "headers", None)
+    if old_session is None or not isinstance(headers, dict):
+        raise RuntimeError("Rubpy did not expose the expected network session")
+
+    await _resolve(old_session.close())
+    connection.session = aiohttp.ClientSession(
+        connector=aiohttp.TCPConnector(ssl=True, limit=100),
+        headers=headers,
+        timeout=aiohttp.ClientTimeout(total=client.timeout),
+    )
 
 
 def _validate_authenticated_session(session_name: str) -> Path:
@@ -51,7 +76,7 @@ def _validate_authenticated_session(session_name: str) -> Path:
 
 
 class RubikaSender:
-    """Rubpy user-account sender using the Walrus upload-then-send flow.
+    """Rubpy user-account sender using upload-then-send and bounded disk usage.
 
     A pre-authenticated Rubpy session must be provisioned outside this process.
     The session name is a path prefix managed by Rubpy, not a bot token.
@@ -70,9 +95,8 @@ class RubikaSender:
 
         _validate_authenticated_session(self.session_name)
 
-        # Rubpy 7.3.5 logs the entire stored SQLite session at INFO in connect().
-        # Give it an isolated WARNING-only logger so auth/private-key values cannot
-        # leak into the worker's INFO logs.
+        # Rubpy 7.3.5 may log stored session fields at INFO during connect().
+        # Isolate its logger so auth/private-key material cannot reach worker logs.
         logger = logging.getLogger(f"telerubik.rubpy.{id(self)}")
         logger.addHandler(logging.NullHandler())
         logger.setLevel(logging.WARNING)
@@ -81,6 +105,7 @@ class RubikaSender:
         self.client = Client(name=self.session_name, platform="Android", logger=logger)
         try:
             await _resolve(self.client.connect())
+            await _enable_verified_rubpy_transport(self.client)
             if not self.client.auth or not self.client.private_key:
                 raise RuntimeError("Rubpy session does not contain authentication material")
 
@@ -89,6 +114,9 @@ class RubikaSender:
             from Crypto.Signature import pkcs1_15
 
             self.client.decode_auth = Crypto.decode_auth(self.client.auth)
+            # Rubpy's authenticated-session connect() restores auth and private_key,
+            # but does not derive the AES passphrase needed by encrypted API calls.
+            self.client.key = Crypto.passphrase(self.client.auth)
             self.client.import_key = pkcs1_15.new(
                 RSA.import_key(self.client.private_key.encode())
             )
@@ -121,43 +149,182 @@ class RubikaSender:
                 candidate = getattr(uploaded, "__dict__", None)
         if not isinstance(candidate, dict) or not candidate:
             raise RuntimeError("Rubpy upload returned no usable file metadata")
-        # Do not mutate library-owned objects.
         return dict(candidate)
+
+    async def _send_single_document(self, path: Path, caption: str) -> Any:
+        if self.client is None:
+            raise RuntimeError("Rubika sender has not been started")
+        path = Path(path)
+        if not path.is_file():
+            raise RuntimeError("Upload source file does not exist")
+        if path.stat().st_size <= 0:
+            raise RuntimeError("Empty files cannot be uploaded through Rubpy 7.3.5")
+        upload_method = getattr(self.client, "upload", None)
+        send_method = getattr(self.client, "send_message", None)
+        if upload_method is None or send_method is None:
+            raise RuntimeError("Installed Rubpy Client lacks upload/send_message; refusing unsafe fallback")
+        uploaded = await _resolve(upload_method(str(path), file_name=path.name))
+        file_inline = self._file_inline(uploaded)
+        result = await _resolve(
+            send_method(
+                object_guid=self.destination_guid,
+                text=caption.strip() or None,
+                file_inline=file_inline,
+            )
+        )
+        self._validate_send_result(result)
+        return result
+
+    @staticmethod
+    def _validate_send_result(result: Any) -> None:
+        if result is None:
+            raise RuntimeError("Rubpy returned no result for send_message")
+        def field(value: Any, name: str) -> Any:
+            return value.get(name) if isinstance(value, dict) else getattr(value, name, None)
+
+        status = field(result, "status")
+        status_det = field(result, "status_det")
+        if status is not None and str(status).strip().upper() not in {"OK", "SUCCESS", "SUCCESSFUL"}:
+            raise RuntimeError("Rubika rejected the message (non-success response status)")
+        if status_det is not None and str(status_det).strip().upper() not in {"OK", "SUCCESS", "SUCCESSFUL"}:
+            raise RuntimeError("Rubika rejected the message (non-success response detail)")
+        if field(result, "error"):
+            raise RuntimeError("Rubika returned an error for the message")
+        if (status is None) != (status_det is None):
+            raise RuntimeError("Rubika response contained an incomplete success status pair")
+        if status is None and status_det is None:
+            # Rubpy 7.3.5 Builder validates the outer status/status_det pair,
+            # then returns Update(result["data"]); that Update intentionally
+            # contains the message payload, not the outer status fields.
+            payload = getattr(result, "original_update", None)
+            message_id = field(result, "message_id")
+            if isinstance(payload, dict) and message_id:
+                return
+            raise RuntimeError("Rubika response did not contain a verifiable success result")
+
+    async def _send_chunked_document(self, path: Path, caption: str) -> dict[str, Any]:
+        """Upload one bounded-size part at a time, then publish its integrity manifest.
+
+        This avoids materializing a second full-size copy of a large video on disk.
+        Parts remain sequential to preserve deterministic order and avoid flooding
+        the destination with concurrent uploads.
+        """
+        if self.client is None:
+            raise RuntimeError("Rubika sender has not been started")
+        before = path.stat()
+        total_bytes = before.st_size
+        total_parts = max(1, math.ceil(total_bytes / DEFAULT_CHUNK_SIZE))
+        full_digest = hashlib.sha256()
+        parts: list[dict[str, Any]] = []
+        bytes_read = 0
+
+        with tempfile.TemporaryDirectory(prefix="telerubik-chunks-") as temporary:
+            chunk_dir = Path(temporary)
+            with path.open("rb") as source:
+                for index in range(1, total_parts + 1):
+                    part_name = f"{path.name}.part{index:04d}-of-{total_parts:04d}"
+                    part_path = chunk_dir / part_name
+                    part_digest = hashlib.sha256()
+                    part_bytes = 0
+                    remaining = DEFAULT_CHUNK_SIZE
+
+                    with part_path.open("xb") as output:
+                        while remaining:
+                            block = source.read(min(1024 * 1024, remaining))
+                            if not block:
+                                break
+                            output.write(block)
+                            part_digest.update(block)
+                            full_digest.update(block)
+                            part_bytes += len(block)
+                            bytes_read += len(block)
+                            remaining -= len(block)
+                        output.flush()
+                        os.fsync(output.fileno())
+
+                    expected_part_size = min(DEFAULT_CHUNK_SIZE, total_bytes - (index - 1) * DEFAULT_CHUNK_SIZE)
+                    if part_bytes != expected_part_size:
+                        raise RuntimeError("Source file changed or ended during chunk preparation")
+
+                    parts.append({
+                        "index": index,
+                        "filename": part_name,
+                        "size_bytes": part_bytes,
+                        "sha256": part_digest.hexdigest(),
+                    })
+                    part_caption = (
+                        (caption.strip() + "\n\n") if index == 1 and caption.strip() else ""
+                    ) + (
+                        f"{path.name} | PART {index:04d}/{total_parts:04d}\n"
+                        f"Bytes: {part_bytes} | SHA-256: {part_digest.hexdigest()}\n"
+                        "Join parts in ascending order; verify with the manifest."
+                    )
+                    await self._send_single_document(part_path, part_caption)
+                    # Free the part before producing the next one.
+                    part_path.unlink()
+
+                if source.read(1):
+                    raise RuntimeError("Source file grew during chunk transfer")
+
+            after = path.stat()
+            if (
+                bytes_read != total_bytes
+                or after.st_size != before.st_size
+                or after.st_mtime_ns != before.st_mtime_ns
+                or getattr(after, "st_ino", None) != getattr(before, "st_ino", None)
+            ):
+                raise RuntimeError("Source file changed during chunk transfer")
+
+            manifest = {
+                "format": "telerubik-chunks-v1",
+                "original_filename": path.name,
+                "total_bytes": total_bytes,
+                "chunk_size_bytes": DEFAULT_CHUNK_SIZE,
+                "total_parts": total_parts,
+                "sha256": full_digest.hexdigest(),
+                "parts": parts,
+            }
+            manifest_path = chunk_dir / f"{path.name}.manifest.json"
+            with manifest_path.open("x", encoding="utf-8") as output:
+                json.dump(manifest, output, ensure_ascii=False, indent=2)
+                output.write("\n")
+                output.flush()
+                os.fsync(output.fileno())
+
+            manifest_caption = (
+                f"CHUNK MANIFEST: {path.name}\n"
+                f"Parts: {total_parts} | Total bytes: {total_bytes}\n"
+                f"Full-file SHA-256: {full_digest.hexdigest()}\n"
+                "Download all numbered parts and this JSON manifest, then reassemble "
+                "in order and verify SHA-256."
+            )
+            await self._send_single_document(manifest_path, manifest_caption)
+
+        return {
+            "status": "OK",
+            "chunked": True,
+            "parts": total_parts,
+            "sha256": full_digest.hexdigest(),
+        }
 
     async def send_document(self, path: Path | None, caption: str) -> Any:
         if self.client is None:
             raise RuntimeError("Rubika sender has not been started")
-        send_method = getattr(self.client, "send_message", None)
-        if send_method is None:
-            raise RuntimeError("Installed Rubpy Client lacks send_message")
         if path is None:
             if not caption.strip():
                 raise RuntimeError("Text-only Telegram post has no text")
             result = await _resolve(
-                send_method(object_guid=self.destination_guid, text=caption.strip())
+                self.client.send_message(object_guid=self.destination_guid, text=caption.strip())
             )
-        else:
-            path = Path(path)
-            if not path.is_file():
-                raise RuntimeError("Upload source file does not exist")
-            upload_method = getattr(self.client, "upload", None)
-            if upload_method is None:
-                raise RuntimeError("Installed Rubpy Client lacks upload; refusing unsafe fallback")
-            uploaded = await _resolve(upload_method(str(path), file_name=path.name))
-            file_inline = self._file_inline(uploaded)
-            result = await _resolve(
-                send_method(
-                    object_guid=self.destination_guid,
-                    text=caption.strip() or None,
-                    file_inline=file_inline,
-                )
-            )
-        if result is None:
-            raise RuntimeError("Rubpy returned no result for send_message")
-        status = result.get("status") if isinstance(result, dict) else getattr(result, "status", None)
-        if status is not None and str(status).strip().upper() not in {"OK", "SUCCESS", "SUCCESSFUL"}:
-            raise RuntimeError("Rubika rejected the message (non-success response status)")
-        return result
+            self._validate_send_result(result)
+            return result
+
+        path = Path(path)
+        if not path.is_file():
+            raise RuntimeError("Upload source file does not exist")
+        if path.stat().st_size <= DEFAULT_CHUNK_SIZE:
+            return await self._send_single_document(path, caption)
+        return await self._send_chunked_document(path, caption)
 
     async def close(self) -> None:
         if self.client is None:

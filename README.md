@@ -2,7 +2,7 @@
 
 **TeleRubik** transfers text-only posts and posts with media from Telegram chats you are authorized to read to a Rubika destination you control. It is independently implemented and borrows the upload pattern observed in Walrus: use a Rubpy **user-account Client**, upload the complete file with `client.upload`, then send the returned metadata with `client.send_message(file_inline=...)`. It does not use the Rubpy BotClient path for media uploads.
 
-> **Status:** implementation and automated tests are being built on the feature branch. The Rubpy upload method must still be validated against the installed `rubpy==7.3.5` runtime, and a real end-to-end transfer to a private destination has not yet been performed.
+> **Status:** the pinned `rubpy==7.3.5` source contract has been inspected and the adapter now handles its session-key, upload-streaming and response-object behavior. The adapter also replaces Rubpy's TLS-verification-disabled HTTP session with certificate-verified TLS before authenticated requests. The latest CI matrix passed on Python 3.11, 3.12 and 3.13, and CodeQL plus dependency audit passed. A live authenticated runtime test and end-to-end transfer to a private destination are still pending.
 
 ## Current capabilities
 
@@ -55,7 +55,7 @@ Dry-run downloads and validates files in an isolated temporary directory but doe
 
 ## File-size and large-file behavior
 
-The worker currently rejects files larger than `TELERUBIK_MAX_FILE_SIZE_MB` before downloading when Telegram provides the size, and validates the actual downloaded size before upload. The default is 2048 MiB (2 GiB). Do not assume that a large file can be sent merely by increasing this setting: actual Rubika server limits and Rubpy's upload behavior must be tested. The local chunk/manifest utility, where present, is not Rubika-native resumable upload and is not automatically sent as one reconstructed file.
+The worker rejects files larger than `TELERUBIK_MAX_FILE_SIZE_MB` before downloading when Telegram provides the size, and validates the actual downloaded size before upload. The default is 2048 MiB (2 GiB). Files larger than 50 MiB are split into sequential 50 MiB-or-smaller parts; each part is sent as a separate Rubika document with its index and SHA-256, followed by a JSON manifest containing part hashes and the original file hash. This is **not** Rubika-native resumable upload and does not produce one playable file automatically: the receiver must download all parts and the manifest, then reassemble them with `telerubik.chunks.reassemble` (or an equivalent implementation) and verify the final SHA-256. A failure mid-transfer stops the sequence; retrying the queue job may resend earlier parts. The 50 MiB size is a conservative initial choice, not a guarantee that Rubika accepts it. A real private-destination test is still required before claiming end-to-end success.
 
 ## Tests
 
