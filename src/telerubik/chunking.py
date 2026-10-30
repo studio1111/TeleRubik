@@ -17,13 +17,6 @@ class ChunkingError(ValueError):
     """Raised when a chunk manifest or part fails validation."""
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
 
 def split_file(source: str | Path, parts_dir: str | Path, *, chunk_size: int) -> dict[str, Any]:
     """Split source into numbered parts and write a JSON manifest."""
@@ -34,6 +27,10 @@ def split_file(source: str | Path, parts_dir: str | Path, *, chunk_size: int) ->
     if isinstance(chunk_size, bool) or not isinstance(chunk_size, int) or chunk_size <= 0:
         raise ChunkingError("chunk_size must be a positive integer")
 
+    source_resolved = source_path.resolve()
+    target_resolved = target_dir.resolve()
+    if source_resolved == target_resolved or target_resolved in source_resolved.parents:
+        raise ChunkingError("source must not be inside the parts directory")
     target_dir.mkdir(parents=True, exist_ok=True)
     entries: list[dict[str, Any]] = []
     total_size = 0
@@ -121,8 +118,14 @@ def reassemble_file(manifest: dict[str, Any] | str | Path, destination: str | Pa
     entries = data.get("part_files")
     if not isinstance(entries, list) or not entries:
         raise ChunkingError("manifest must contain at least one part")
-    if data.get("parts") != len(entries):
+    if isinstance(data.get("parts"), bool) or not isinstance(data.get("parts"), int) or data["parts"] != len(entries):
         raise ChunkingError("manifest part count does not match entries")
+    expected_size = data.get("size")
+    if isinstance(expected_size, bool) or not isinstance(expected_size, int) or expected_size < 0:
+        raise ChunkingError("manifest size must be a non-negative integer")
+    expected_hash = data.get("sha256")
+    if not isinstance(expected_hash, str) or len(expected_hash) != 64 or any(ch not in "0123456789abcdef" for ch in expected_hash):
+        raise ChunkingError("manifest SHA-256 is invalid")
 
     output_path = Path(destination)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -144,18 +147,24 @@ def reassemble_file(manifest: dict[str, Any] | str | Path, destination: str | Pa
                     part_bytes = part_path.read_bytes()
                 except OSError as exc:
                     raise ChunkingError(f"part {expected_index} is missing or unreadable") from exc
-                if len(part_bytes) != entry.get("size"):
+                expected_part_size = entry.get("size")
+                if isinstance(expected_part_size, bool) or not isinstance(expected_part_size, int) or expected_part_size < 0:
+                    raise ChunkingError(f"part {expected_index} size metadata is invalid")
+                expected_part_hash = entry.get("sha256")
+                if not isinstance(expected_part_hash, str) or len(expected_part_hash) != 64 or any(ch not in "0123456789abcdef" for ch in expected_part_hash):
+                    raise ChunkingError(f"part {expected_index} hash metadata is invalid")
+                if len(part_bytes) != expected_part_size:
                     raise ChunkingError(f"part {expected_index} size mismatch")
-                if hashlib.sha256(part_bytes).hexdigest() != entry.get("sha256"):
+                if hashlib.sha256(part_bytes).hexdigest() != expected_part_hash:
                     raise ChunkingError(f"part {expected_index} hash mismatch")
                 out.write(part_bytes)
                 digest.update(part_bytes)
                 total_size += len(part_bytes)
             out.flush()
             os.fsync(out.fileno())
-        if total_size != data.get("size"):
+        if total_size != expected_size:
             raise ChunkingError("reassembled file size mismatch")
-        if digest.hexdigest() != data.get("sha256"):
+        if digest.hexdigest() != expected_hash:
             raise ChunkingError("reassembled file SHA-256 mismatch")
         os.replace(temporary, output_path)
     except BaseException:
