@@ -72,7 +72,7 @@ Configure these repository Actions secrets before running it: `TELEGRAM_API_ID`,
 To export the existing authorized Telethon session once on the current Termux setup (this prints a secret; do not paste it into chat or commit it):
 
 ```bash
-python -c 'from dotenv import load_dotenv; load_dotenv(); import os; from telethon.sync import TelegramClient; from telethon.sessions import StringSession; c=TelegramClient(os.getenv("TELEGRAM_SESSION_PATH", "./private/telegram_session"), int(os.environ["TELEGRAM_API_ID"]), os.environ["TELEGRAM_API_HASH"]); c.connect(); print(c.session.save()); c.disconnect()'
+python -c 'from dotenv import load_dotenv; load_dotenv(); import os; from telethon.sync import TelegramClient; from telethon.sessions import StringSession; c=TelegramClient(os.getenv("TELEGRAM_SESSION_PATH", "./private/telegram_session"), int(os.environ["TELEGRAM_API_ID"]), os.environ["TELEGRAM_API_HASH"]); c.connect(); print(StringSession.save(c.session)); c.disconnect()'
 ```
 
 Copy the printed value directly into the GitHub repository secret named `TELEGRAM_SESSION_STRING`, then clear it from clipboard/history. No media is downloaded by this export step.
