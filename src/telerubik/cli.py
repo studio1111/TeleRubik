@@ -70,20 +70,26 @@ async def _run(settings: Settings, queue: TransferQueue) -> None:
             for chat in settings.telegram_source_chats:
                 chat_ref = _chat_ref(chat)
                 async for message in client.iter_messages(chat_ref, limit=settings.lookback_limit):
-                    if not message.media or not getattr(message, "id", None): continue
+                    if not getattr(message, "id", None): continue
+                    caption = getattr(message, "message", "") or ""
+                    if not message.media and not caption.strip(): continue
                     if settings.allowed_user_ids and getattr(message, "sender_id", None) not in settings.allowed_user_ids: continue
                     size = getattr(getattr(message, "file", None), "size", None)
                     if size is not None and size > settings.max_file_size_bytes: continue
-                    name = safe_filename(getattr(getattr(message, "file", None), "name", None) or f"telegram-{message.id}")
+                    name = safe_filename(
+                        getattr(getattr(message, "file", None), "name", None)
+                        or (f"telegram-{message.id}" if message.media else f"text-{message.id}")
+                    )
                     queue.enqueue(
                         str(chat_ref),
                         int(message.id),
                         name,
-                        getattr(message, "message", "") or "",
+                        caption,
                         {
                             "source_chat": str(chat_ref),
                             "message_id": int(message.id),
                             "expected_size": size if isinstance(size, int) and size >= 0 else None,
+                            "text_only": not bool(message.media),
                         },
                     )
             while await engine.process_one(downloader, upload): pass
