@@ -1,4 +1,5 @@
 name: Telegram file inventory
+# Inventory remains read-only: it only scans Telegram metadata and publishes a short-lived report artifact.
 
 on:
   push:
