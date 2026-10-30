@@ -3,6 +3,7 @@ import argparse
 import asyncio
 import logging
 import os
+import shutil
 from pathlib import Path
 from dotenv import load_dotenv
 from .adapters import RubikaSender
@@ -120,6 +121,13 @@ async def _run(settings: Settings, queue: TransferQueue, single_job: tuple[str, 
             size = getattr(message.file, "size", None)
             if size is None or size <= 0 or size > settings.max_file_size_bytes:
                 raise RuntimeError("The selected file size is missing, invalid, or exceeds the configured limit")
+            free_bytes = shutil.disk_usage(settings.download_dir).free
+            required_free_bytes = size + 256 * 1024 * 1024
+            if free_bytes < required_free_bytes:
+                raise RuntimeError(
+                    f"Insufficient free disk space for the selected file: need at least "
+                    f"{required_free_bytes} bytes including safety reserve"
+                )
             payload = {
                 "source_chat": source_chat,
                 "message_id": message_id,
