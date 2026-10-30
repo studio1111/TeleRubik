@@ -28,6 +28,29 @@ def make_session(path: Path) -> bytes:
 
 
 class RubikaSessionRestoreTests(unittest.TestCase):
+from scripts.export_rubika_session import export_session
+
+    def test_exports_authenticated_session_to_private_base64_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.rp"
+            raw = make_session(source)
+            output = root / "private" / "session.rp.b64"
+            result = export_session(source, output)
+            self.assertEqual(base64.b64decode(result.read_bytes()), raw)
+            self.assertEqual(os.stat(result).st_mode & 0o777, 0o600)
+
+    def test_export_rejects_non_session_database(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "other.rp"
+            connection = sqlite3.connect(source)
+            connection.execute("CREATE TABLE unrelated (value text)")
+            connection.commit()
+            connection.close()
+            with self.assertRaisesRegex(ValueError, "not a Rubpy"):
+                export_session(source, root / "out.b64")
+
     def test_restores_valid_rubpy_database_with_private_permissions(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
