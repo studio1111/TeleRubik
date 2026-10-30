@@ -53,10 +53,19 @@ class TransferQueue:
         with self._connect() as db:
             cursor = db.execute("INSERT OR IGNORE INTO jobs(source_chat,message_id,filename,caption,payload_json) VALUES(?,?,?,?,?)", (str(source_chat), int(message_id), filename, caption, json.dumps(payload or {}, ensure_ascii=False)))
             return cursor.rowcount == 1
-    def next_pending(self) -> Job | None:
+    def next_pending(self, source_chat: str | None = None, message_id: int | None = None) -> Job | None:
+        """Claim the oldest pending job, optionally restricted to one exact source message."""
+        if (source_chat is None) != (message_id is None):
+            raise ValueError("source_chat and message_id must be supplied together")
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT * FROM jobs WHERE status='pending' ORDER BY id LIMIT 1").fetchone()
+            if source_chat is None:
+                row = db.execute("SELECT * FROM jobs WHERE status='pending' ORDER BY id LIMIT 1").fetchone()
+            else:
+                row = db.execute(
+                    "SELECT * FROM jobs WHERE status='pending' AND source_chat=? AND message_id=? LIMIT 1",
+                    (str(source_chat), int(message_id)),
+                ).fetchone()
             if row is None:
                 db.commit()
                 return None
