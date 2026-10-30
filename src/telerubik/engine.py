@@ -31,43 +31,45 @@ class TransferEngine:
         self._previewed_jobs: set[int] = set()
 
     async def preview_pending(self, downloader: Downloader) -> int:
-        """Download and validate pending jobs without claiming or completing them."""
+        """Validate pending jobs without claiming or changing durable queue state."""
         if not self.dry_run:
             raise RuntimeError("preview_pending is available only when dry-run is enabled")
 
         previewed = 0
-        # Use an isolated temporary directory so a preview cannot delete or
-        # overwrite a verified cache file retained by a previous live failure.
+        # Isolate previews so downloader cache logic cannot overwrite or delete
+        # a verified file retained by a previous live upload failure.
         with tempfile.TemporaryDirectory(
             prefix=".telerubik-preview-", dir=self.download_dir
         ) as temporary_directory:
             preview_root = Path(temporary_directory).resolve()
-            # Materialize the lightweight queue records first. Do not hold a
-            # SQLite read transaction open while network downloads are running.
+            # Materialize queue records first so a read transaction is not held
+            # open while potentially slow Telegram downloads are running.
             pending_jobs = list(self.queue.iter_pending())
             for job in pending_jobs:
                 if job.id in self._previewed_jobs:
                     continue
-                # One preview per job per process. A later live process will
-                # still see the job as pending and perform the actual send.
+
+                # One preview per job per process; a later live worker will
+                # still see this durable job in pending state.
                 self._previewed_jobs.add(job.id)
                 previewed += 1
-                path: Path | None = None
                 try:
                     downloaded = await downloader(job, preview_root)
-                if downloaded is None:
-                    if job.payload.get("text_only") is not True or not job.caption.strip():
-                        raise RuntimeError("Source message has no downloadable file or text")
-                    log.info(
-                        "DRY RUN: text-only job=%s chars=%s (left pending)",
-                        job.id,
-                        len(job.caption),
-                    )
-                    continue
+                    if downloaded is None:
+                        if job.payload.get("text_only") is not True or not job.caption.strip():
+                            raise RuntimeError("Source message has no downloadable file or text")
+                        log.info(
+                            "DRY RUN: text-only job=%s chars=%s (left pending)",
+                            job.id,
+                            len(job.caption),
+                        )
+                        continue
 
                     path = Path(downloaded).resolve()
                     if preview_root not in path.parents:
-                        raise RuntimeError("Downloader returned a path outside the isolated preview directory")
+                        raise RuntimeError(
+                            "Downloader returned a path outside the isolated preview directory"
+                        )
                     if not path.is_file():
                         raise RuntimeError("Downloaded file does not exist")
                     size = path.stat().st_size
@@ -81,16 +83,24 @@ class TransferEngine:
                         sha256_file(path),
                     )
                 except Exception as exc:
-                    # Preview failures do not mutate retry counts or queue state.
-                    log.warning("DRY RUN validation failed for job %s (%s)", job.id, type(exc).__name__)
+                    # Preview failures do not alter attempt counts or queue state.
+                    log.warning(
+                        "DRY RUN validation failed for job %s (%s)",
+                        job.id,
+                        type(exc).__name__,
+                    )
+        return previewed
 
     async def process_one(self, downloader: Downloader, sender: Sender) -> bool:
         if self.dry_run:
-            raise RuntimeError("Use preview_pending during dry-run; process_one must not claim queue jobs")
+            raise RuntimeError(
+                "Use preview_pending during dry-run; process_one must not claim queue jobs"
+            )
 
         job = self.queue.next_pending()
         if job is None:
             return False
+
         path: Path | None = None
         transfer_completed = False
         try:
@@ -110,6 +120,7 @@ class TransferEngine:
                 if not validate_file_size(size, self.max_file_size_bytes):
                     raise RuntimeError("File size exceeds configured limit or is invalid")
                 await sender(path, job.caption)
+
             self.queue.complete(job.id)
             transfer_completed = True
             return True
@@ -117,7 +128,12 @@ class TransferEngine:
             status = self.queue.retry_or_fail(
                 job.id, self.max_retries, type(exc).__name__
             )
-            log.warning("Transfer job %s %s: %s", job.id, status, type(exc).__name__)
+            log.warning(
+                "Transfer job %s %s: %s",
+                job.id,
+                status,
+                type(exc).__name__,
+            )
             if status == "pending":
                 await asyncio.sleep(
                     self.retry_base_seconds * min(2 ** max(0, job.attempts - 1), 16)
@@ -127,8 +143,8 @@ class TransferEngine:
             if path is not None and path.is_file():
                 try:
                     root = self.download_dir.resolve()
-                    # Retain verified files after live upload failures so retries
-                    # and process restarts can reuse them; clean only after success.
+                    # Keep verified files after live failures for retry/restart.
+                    # Delete only after the remote send was accepted.
                     if root in path.parents and transfer_completed:
                         path.unlink()
                         cache_sidecar_path(path).unlink(missing_ok=True)
