@@ -165,6 +165,9 @@ class RubikaSender:
             raise RuntimeError("Installed Rubpy Client lacks upload/send_message; refusing unsafe fallback")
         uploaded = await _resolve(upload_method(str(path), file_name=path.name))
         file_inline = self._file_inline(uploaded)
+        # Rubpy 7.3.5 only injects this field when it performs the upload
+        # internally from bytes; pre-uploaded metadata bypasses that branch.
+        file_inline["type"] = "File"
         result = await _resolve(
             send_method(
                 object_guid=self.destination_guid,
