@@ -20,6 +20,22 @@ def _chat_ref(value: str):
     """Telethon expects numeric chat IDs as integers, not username-like strings."""
     return int(value) if value.lstrip("-").isdigit() else value
 
+async def _iter_source_messages(client, chat_ref: str, cursor: int, lookback_limit: int):
+    """Yield incremental messages oldest-first, bounding only the initial import."""
+    if cursor:
+        async for message in client.iter_messages(chat_ref, min_id=cursor, reverse=True):
+            yield message
+        return
+
+    # Telethon returns newest-first by default. Reverse only the bounded first-run
+    # batch so jobs enter the queue in their original chronological order.
+    messages = [
+        message
+        async for message in client.iter_messages(chat_ref, limit=lookback_limit)
+    ]
+    for message in reversed(messages):
+        yield message
+
 async def _run(settings: Settings, queue: TransferQueue) -> None:
     recovered = queue.recover_processing()
     if recovered:
@@ -74,29 +90,59 @@ async def _run(settings: Settings, queue: TransferQueue) -> None:
         while True:
             for chat in settings.telegram_source_chats:
                 chat_ref = _chat_ref(chat)
-                async for message in client.iter_messages(chat_ref, limit=settings.lookback_limit):
-                    if not getattr(message, "id", None): continue
+                source_key = str(chat_ref)
+                cursor = queue.get_cursor(source_key)
+                highest_seen = cursor
+                scanned = queued = duplicates = skipped = 0
+                async for message in _iter_source_messages(
+                    client, chat_ref, cursor, settings.lookback_limit
+                ):
+                    scanned += 1
+                    message_id = getattr(message, "id", None)
+                    if message_id is None:
+                        skipped += 1
+                        continue
+                    highest_seen = max(highest_seen, int(message_id))
                     caption = getattr(message, "message", "") or ""
-                    if not message.media and not caption.strip(): continue
-                    if settings.allowed_user_ids and getattr(message, "sender_id", None) not in settings.allowed_user_ids: continue
+                    if not getattr(message, "media", None) and not caption.strip():
+                        skipped += 1
+                        continue
+                    if settings.allowed_user_ids and getattr(message, "sender_id", None) not in settings.allowed_user_ids:
+                        skipped += 1
+                        continue
                     size = getattr(getattr(message, "file", None), "size", None)
-                    if size is not None and size > settings.max_file_size_bytes: continue
+                    if size is not None and size > settings.max_file_size_bytes:
+                        skipped += 1
+                        continue
                     name = safe_filename(
                         getattr(getattr(message, "file", None), "name", None)
-                        or (f"telegram-{message.id}" if message.media else f"text-{message.id}")
+                        or (f"telegram-{message_id}" if message.media else f"text-{message_id}")
                     )
-                    queue.enqueue(
-                        str(chat_ref),
-                        int(message.id),
+                    added = queue.enqueue(
+                        source_key,
+                        int(message_id),
                         name,
                         caption,
                         {
-                            "source_chat": str(chat_ref),
-                            "message_id": int(message.id),
+                            "source_chat": source_key,
+                            "message_id": int(message_id),
                             "expected_size": size if isinstance(size, int) and size >= 0 else None,
                             "text_only": not bool(message.media),
                         },
                     )
+                    if added:
+                        queued += 1
+                    else:
+                        duplicates += 1
+                # Only persist the cursor after the complete source scan. If
+                # Telegram raises mid-iteration, the next poll safely repeats
+                # the uncommitted range and the queue deduplicates it.
+                if highest_seen > cursor:
+                    queue.set_cursor(source_key, highest_seen)
+                log.info(
+                    "Source scan chat=%s scanned=%s queued=%s duplicates=%s skipped=%s cursor=%s",
+                    source_key, scanned, queued, duplicates, skipped, highest_seen,
+                )
             while await engine.process_one(downloader, upload): pass
             await asyncio.sleep(settings.poll_seconds)
     finally:
