@@ -91,3 +91,16 @@ python -m compileall -q src tests
 GitHub Actions can test code but cannot authenticate to your Telegram or Rubika accounts or prove a real transfer. A live test requires authorized session material and a private destination, which must never be posted in an issue or chat.
 
 See [design notes](docs/design.md), [implementation checklist](docs/implementation-plan.md), and [security policy](SECURITY.md).
+
+
+## Request a Rubika login code safely
+
+If the first login attempt fails with `InvalidInput`, do not repeatedly request SMS codes. The Rubpy 7.3.5 `sendCode` method expects the phone number as digits without a leading plus sign. Use the helper below once after checking the number's international country code:
+
+```bash
+python scripts/request_rubika_code.py
+```
+
+Enter the number in international format (for example, `+<country-code><number>`). The helper normalizes Persian/Arabic digits and an international `00` prefix, uses the Android client profile, and reports only the API status and detail identifiers. It never prints the phone number, OTP, password, or raw server response. It only requests a code; it does not complete login or create an authenticated session.
+
+If `INVALID_INPUT` persists with a correctly formatted international number, stop retrying and investigate the server/API response rather than switching platforms or repeatedly requesting codes.
