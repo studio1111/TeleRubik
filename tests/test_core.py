@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -92,5 +93,30 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(queue.stats()["failed"], 1)
             self.assertTrue(outside.exists())
         with tempfile.TemporaryDirectory() as tmp: asyncio.run(scenario(tmp))
+
+    def test_failure_does_not_persist_raw_exception_message(self):
+        async def scenario(tmp):
+            queue_path = Path(tmp) / "queue.sqlite3"
+            queue = TransferQueue(queue_path)
+            queue.enqueue("chat", 10, "post.txt", "caption", {"text_only": True})
+
+            async def download(job, directory):
+                return None
+
+            async def send(path, caption):
+                raise RuntimeError("private-token=must-never-be-stored")
+
+            engine = TransferEngine(queue, Path(tmp) / "downloads", 100, 1, 1, dry_run=False)
+            await engine.process_one(download, send)
+            db = sqlite3.connect(queue_path)
+            try:
+                stored_error = db.execute("SELECT last_error FROM jobs").fetchone()[0]
+            finally:
+                db.close()
+            self.assertEqual(stored_error, "RuntimeError")
+            self.assertNotIn("must-never-be-stored", stored_error)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
 
 if __name__ == "__main__": unittest.main()
