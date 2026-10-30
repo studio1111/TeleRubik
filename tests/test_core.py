@@ -3,6 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from telerubik.config import ConfigurationError, Settings
 from telerubik.cli import _iter_source_messages
 from telerubik.engine import TransferEngine
