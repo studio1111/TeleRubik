@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+import sqlite3
+import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from scripts.request_rubika_code import normalize_international_phone, safe_error_fields
+from scripts.request_rubika_code import (
+    _validate_session_target,
+    authenticate_client,
+    normalize_international_phone,
+    safe_error_fields,
+)
 
 
 class RubikaPhoneNormalizationTests(unittest.TestCase):
@@ -39,6 +49,144 @@ class RubikaPhoneNormalizationTests(unittest.TestCase):
     def test_error_reporting_rejects_untrusted_identifier_text(self):
         error = RuntimeError("{'status': 'private phone 123', 'status_det': 'INVALID_INPUT'}")
         self.assertEqual(safe_error_fields(error), ("unknown", "INVALID_INPUT"))
+
+    def test_session_target_rejects_authenticated_existing_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "existing.rp"
+            db = sqlite3.connect(path)
+            db.executescript(
+                "CREATE TABLE version(version integer primary key);"
+                "INSERT INTO version VALUES (1);"
+                "CREATE TABLE session(phone text, auth text, guid text, agent text, private_key text);"
+                "INSERT INTO session VALUES ('phone', 'auth', 'guid', 'agent', 'key');"
+            )
+            db.commit()
+            db.close()
+            with self.assertRaisesRegex(ValueError, "already exists"):
+                _validate_session_target(str(path))
+
+    def test_session_target_rejects_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "target.rp"
+            target.write_text("not used")
+            link = root / "link.rp"
+            link.symlink_to(target)
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                _validate_session_target(str(link))
+
+
+class RubikaTwoStepLoginTests(unittest.IsolatedAsyncioTestCase):
+    async def test_sendpasskey_uses_hidden_password_then_completes_session(self):
+        class FakeSession:
+            def __init__(self):
+                self.inserted = None
+
+            def insert(self, **kwargs):
+                self.inserted = kwargs
+
+        class FakeClient:
+            def __init__(self):
+                self.session = FakeSession()
+                self.name = "private/rubika_session"
+                self.user_agent = "test-agent"
+                self.calls = []
+                self.code_results = [
+                    SimpleNamespace(status="SendPassKey", hint_pass_key="***"),
+                    SimpleNamespace(status="OK", phone_code_hash="opaque-hash"),
+                ]
+
+            async def send_code(self, **kwargs):
+                self.calls.append(("send_code", kwargs))
+                return self.code_results.pop(0)
+
+            async def sign_in(self, **kwargs):
+                self.calls.append(("sign_in", kwargs))
+                return SimpleNamespace(
+                    status="OK",
+                    auth="encrypted-auth",
+                    user=SimpleNamespace(user_guid="user-guid", phone="989121234567"),
+                )
+
+            async def register_device(self, **kwargs):
+                self.calls.append(("register_device", kwargs))
+
+            async def get_me(self):
+                self.calls.append(("get_me", {}))
+                return SimpleNamespace(user=SimpleNamespace(user_guid="user-guid"))
+
+        class FakeCrypto:
+            @staticmethod
+            def create_keys():
+                return "public-key", "private-key"
+
+            @staticmethod
+            def decrypt_RSA_OAEP(private_key, encrypted):
+                return "a" * 32
+
+            @staticmethod
+            def passphrase(auth):
+                return "derived-key"
+
+            @staticmethod
+            def decode_auth(auth):
+                return "decoded-auth"
+
+        class FakeRSA:
+            @staticmethod
+            def import_key(value):
+                return "imported-key"
+
+        class FakePkcs:
+            @staticmethod
+            def new(value):
+                return "signing-key"
+
+        prompts = []
+
+        def password_prompt(label):
+            prompts.append(label)
+            return "private-password"
+
+        def code_prompt(label):
+            prompts.append(label)
+            return "12345"
+
+        client = FakeClient()
+        with patch(
+            "scripts.request_rubika_code._load_crypto_primitives",
+            return_value=(FakeCrypto, FakeRSA, FakePkcs),
+        ):
+            await authenticate_client(client, "989121234567", password_prompt, code_prompt)
+
+        self.assertEqual(client.calls[0][1], {
+            "phone_number": "989121234567", "send_type": "SMS"
+        })
+        self.assertEqual(client.calls[1][1], {
+            "phone_number": "989121234567",
+            "pass_key": "private-password",
+            "send_type": "SMS",
+        })
+        self.assertEqual(client.calls[2][1]["phone_code_hash"], "opaque-hash")
+        self.assertEqual(client.calls[2][1]["phone_code"], "12345")
+        self.assertEqual(client.session.inserted["auth"], "a" * 32)
+        self.assertEqual(client.session.inserted["guid"], "user-guid")
+        self.assertEqual([call[0] for call in client.calls][-2:], ["register_device", "get_me"])
+        self.assertEqual(len(prompts), 2)
+
+    async def test_empty_two_step_password_stops_before_second_request(self):
+        class FakeClient:
+            def __init__(self):
+                self.calls = 0
+
+            async def send_code(self, **kwargs):
+                self.calls += 1
+                return SimpleNamespace(status="SendPassKey")
+
+        client = FakeClient()
+        with self.assertRaisesRegex(ValueError, "cannot be empty"):
+            await authenticate_client(client, "989121234567", lambda _: "", lambda _: "12345")
+        self.assertEqual(client.calls, 1)
 
 
 if __name__ == "__main__":
