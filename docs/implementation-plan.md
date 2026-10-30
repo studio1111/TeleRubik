@@ -15,7 +15,8 @@
 - [x] Add adapter tests for upload/send order, empty captions, missing metadata and missing files.
 - [x] Document the user-session requirement and keep secrets/session files out of Git.
 - [x] Keep live sending disabled by default.
-- [ ] Run CI on Python 3.11, 3.12 and 3.13 and fix any failures. (Not yet confirmed.)
+- [x] Make dry-run previews non-destructive: keep jobs pending, avoid retry-count changes, and isolate preview downloads from retained live-retry cache.
+- [x] Run CI on Python 3.11, 3.12 and 3.13 and fix any failures (latest checked head passed all jobs).
 - [ ] Verify exact behavior against installed rubpy==7.3.5, including response-level errors and large files.
 - [ ] Run an end-to-end transfer to a private Rubika destination using an authorized session.
 - [ ] Add persistent worker hosting only after runtime behavior and session storage are validated.
