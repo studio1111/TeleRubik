@@ -27,7 +27,7 @@ jobs:
       TELEGRAM_SESSION_STRING: ${{ secrets.TELEGRAM_SESSION_STRING }}
       TELEGRAM_SOURCE_CHATS: "@Animehighbo"
       RUBIKA_SESSION_B64: ${{ secrets.RUBIKA_SESSION_B64 }}
-      RUBIKA_SESSION_NAME: ${{ runner.temp }}/telerubik-private/rubika_session.rp
+      RUBIKA_SESSION_NAME: ${{ runner.temp }}/telerubik-private/rubika_session
       RUBIKA_DESTINATION_GUID: ${{ secrets.RUBIKA_DESTINATION_GUID }}
       TELERUBIK_MAX_FILE_SIZE_MB: "2048"
       TELERUBIK_DRY_RUN: "false"
@@ -66,10 +66,10 @@ jobs:
         run: |
           set -euo pipefail
           install -d -m 700 "$RUNNER_TEMP/telerubik-private"
-          printf '%s' "$RUBIKA_SESSION_B64" | base64 --decode > "$RUBIKA_SESSION_NAME"
-          chmod 600 "$RUBIKA_SESSION_NAME"
+          printf '%s' "$RUBIKA_SESSION_B64" | base64 --decode > "$RUBIKA_SESSION_NAME.rp"
+          chmod 600 "$RUBIKA_SESSION_NAME.rp"
           unset RUBIKA_SESSION_B64
-          test -s "$RUBIKA_SESSION_NAME"
+          test -s "$RUBIKA_SESSION_NAME.rp"
           echo "Rubpy session provisioned in runner temporary storage."
 
       - name: Install TeleRubik
