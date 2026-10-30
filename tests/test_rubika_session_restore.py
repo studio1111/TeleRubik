@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from scripts.restore_rubika_session import restore_session
+from scripts.export_rubika_session import export_session
 
 
 def make_session(path: Path) -> bytes:
@@ -28,7 +29,6 @@ def make_session(path: Path) -> bytes:
 
 
 class RubikaSessionRestoreTests(unittest.TestCase):
-from scripts.export_rubika_session import export_session
 
     def test_exports_authenticated_session_to_private_base64_file(self):
         with tempfile.TemporaryDirectory() as directory:
