@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from telerubik.config import ConfigurationError, Settings
+from telerubik.cli import _iter_source_messages
 from telerubik.engine import TransferEngine
 from telerubik.queue import TransferQueue
 from telerubik.security import safe_filename, validate_file_size
