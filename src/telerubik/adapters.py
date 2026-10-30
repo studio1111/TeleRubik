@@ -68,8 +68,11 @@ class RubikaSender:
         )
         if result is None:
             raise RuntimeError("Rubpy returned no result for send_message")
-        # A returned API response, including structured error responses, is retained
-        # for callers/logging; transport exceptions propagate to the retry queue.
+        status = result.get("status") if isinstance(result, dict) else getattr(result, "status", None)
+        if status is not None and str(status).strip().upper() not in {"OK", "SUCCESS", "SUCCESSFUL"}:
+            # Avoid including the response body, which may contain user data.
+            raise RuntimeError("Rubika rejected the message (non-success response status)")
+        # Transport exceptions and explicit API errors propagate to the retry queue.
         return result
 
     async def close(self) -> None:
