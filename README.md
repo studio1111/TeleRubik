@@ -55,7 +55,7 @@ Dry-run downloads and validates files in an isolated temporary directory but doe
 
 ## File-size and large-file behavior
 
-The worker currently rejects files larger than `TELERUBIK_MAX_FILE_SIZE_MB` before downloading when Telegram provides the size, and validates the actual downloaded size before upload. The default is 2048 MiB (2 GiB). Do not assume that a large file can be sent merely by increasing this setting: actual Rubika server limits and Rubpy's upload behavior must be tested. The local chunk/manifest utility, where present, is not Rubika-native resumable upload and is not automatically sent as one reconstructed file.
+The worker rejects files larger than `TELERUBIK_MAX_FILE_SIZE_MB` before downloading when Telegram provides the size, and validates the actual downloaded size before upload. The default is 2048 MiB (2 GiB). Files larger than 50 MiB are split into sequential 50 MiB-or-smaller parts; each part is sent as a separate Rubika document with its index and SHA-256, followed by a JSON manifest containing part hashes and the original file hash. This is **not** Rubika-native resumable upload and does not produce one playable file automatically: the receiver must download all parts and the manifest, then reassemble them with `telerubik.chunks.reassemble` (or an equivalent implementation) and verify the final SHA-256. A failure mid-transfer stops the sequence; retrying the queue job may resend earlier parts. The 50 MiB size is a conservative initial choice, not a guarantee that Rubika accepts it. A real private-destination test is still required before claiming end-to-end success.
 
 ## Tests
 
