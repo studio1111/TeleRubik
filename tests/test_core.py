@@ -119,4 +119,70 @@ class EngineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             asyncio.run(scenario(tmp))
 
+
+class SourceCursorTests(unittest.TestCase):
+    def test_cursor_is_monotonic_and_defaults_to_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = TransferQueue(Path(tmp) / "state.sqlite3")
+            self.assertEqual(queue.get_cursor("@channel"), 0)
+            queue.set_cursor("@channel", 12)
+            queue.set_cursor("@channel", 9)
+            self.assertEqual(queue.get_cursor("@channel"), 12)
+
+    def test_negative_cursor_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = TransferQueue(Path(tmp) / "state.sqlite3")
+            with self.assertRaises(ValueError):
+                queue.set_cursor("@channel", -1)
+
+    def test_first_scan_is_bounded_and_yields_oldest_first(self):
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+
+            def iter_messages(self, chat, **kwargs):
+                self.calls.append((chat, kwargs))
+
+                async def messages():
+                    for message_id in (30, 20, 10):
+                        yield SimpleNamespace(id=message_id)
+
+                return messages()
+
+        async def scenario():
+            client = FakeClient()
+            result = [
+                message.id
+                async for message in _iter_source_messages(client, "@channel", 0, 3)
+            ]
+            self.assertEqual(result, [10, 20, 30])
+            self.assertEqual(client.calls, [("@channel", {"limit": 3})])
+
+        asyncio.run(scenario())
+
+    def test_incremental_scan_uses_cursor_without_history_limit(self):
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+
+            def iter_messages(self, chat, **kwargs):
+                self.calls.append((chat, kwargs))
+
+                async def messages():
+                    for message_id in (101, 102, 103):
+                        yield SimpleNamespace(id=message_id)
+
+                return messages()
+
+        async def scenario():
+            client = FakeClient()
+            result = [
+                message.id
+                async for message in _iter_source_messages(client, -100123, 100, 25)
+            ]
+            self.assertEqual(result, [101, 102, 103])
+            self.assertEqual(client.calls, [(-100123, {"min_id": 100, "reverse": True})])
+
+        asyncio.run(scenario())
+
 if __name__ == "__main__": unittest.main()
