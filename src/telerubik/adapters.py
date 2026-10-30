@@ -95,6 +95,9 @@ class RubikaSender:
             from Crypto.Signature import pkcs1_15
 
             self.client.decode_auth = Crypto.decode_auth(self.client.auth)
+            # Rubpy's authenticated-session connect() restores auth and private_key,
+            # but does not derive the AES passphrase needed by encrypted API calls.
+            self.client.key = Crypto.passphrase(self.client.auth)
             self.client.import_key = pkcs1_15.new(
                 RSA.import_key(self.client.private_key.encode())
             )
