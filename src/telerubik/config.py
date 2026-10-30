@@ -67,7 +67,7 @@ class Settings:
         session_name = values["RUBIKA_SESSION_NAME"].strip()
         if not session_name or Path(session_name).name in {"", ".", ".."}:
             raise ConfigurationError("RUBIKA_SESSION_NAME must be a valid session name or path")
-        max_mb = _positive_int(values, "TELERUBIK_MAX_FILE_SIZE_MB", 500)
+        max_mb = _positive_int(values, "TELERUBIK_MAX_FILE_SIZE_MB", 2048)
         return cls(
             api_id,
             values["TELEGRAM_API_HASH"].strip(),
