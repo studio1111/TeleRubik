@@ -29,6 +29,7 @@ Copy `.env.example` to `.env` and configure:
 
 - `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`
 - `TELEGRAM_SOURCE_CHATS`, comma-separated
+- Optional `TELEGRAM_SESSION_STRING` for a hosted worker; otherwise the local `TELEGRAM_SESSION_PATH` file is used. The worker connects only with an already-authorized session and never starts an interactive login.
 - `RUBIKA_SESSION_NAME`, path/name for the Rubpy user session
 - `RUBIKA_DESTINATION_GUID`
 - Optional: `TELEGRAM_ALLOWED_USER_IDS`, `TELERUBIK_MAX_FILE_SIZE_MB`, `TELERUBIK_POLL_SECONDS`
