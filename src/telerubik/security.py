@@ -15,7 +15,7 @@ def safe_filename(value: str | None, fallback: str = "telegram-file") -> str:
     if candidate in {"", ".", ".."}:
         candidate = fallback
     stem = candidate.split(".", 1)[0].upper()
-    if stem in {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10)}:
+    if stem in {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}:
         candidate = "_" + candidate
     return candidate[:180] or fallback
 
