@@ -1,14 +1,10 @@
-name: Rubika private-destination smoke test
+name: Rubika private-destination user-session smoke test
 
 on:
   workflow_dispatch:
     inputs:
-      destination_guid:
-        description: "GUID of a private Rubika destination you control"
-        required: true
-        type: string
       confirm_live_test:
-        description: "Choose the exact confirmation only after verifying the destination is private"
+        description: "Confirm that the configured private Rubika destination is yours and may receive one small test file"
         required: true
         type: choice
         options:
@@ -25,73 +21,98 @@ concurrency:
 
 jobs:
   smoke-test:
-    if: ${{ inputs.confirm_live_test == 'I_CONFIRM_PRIVATE_DESTINATION' && inputs.destination_guid != '' }}
+    if: ${{ inputs.confirm_live_test == 'I_CONFIRM_PRIVATE_DESTINATION' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      RUBIKA_SESSION_B64: ${{ secrets.RUBIKA_SESSION_B64 }}
+      RUBIKA_SESSION_NAME: ${{ runner.temp }}/telerubik-private/rubika_session
+      RUBIKA_DESTINATION_GUID: ${{ secrets.RUBIKA_DESTINATION_GUID }}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
+      - name: Check required secrets without displaying values
+        shell: bash
+        run: |
+          set -euo pipefail
+          for key in RUBIKA_SESSION_B64 RUBIKA_DESTINATION_GUID; do
+            if [[ -z "${!key:-}" ]]; then
+              echo "::error::Missing required repository Actions secret: $key"
+              exit 1
+            fi
+          done
 
-      - name: Set up Python
-        uses: actions/setup-python@v7
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
 
-      - name: Install package
-        run: python -m pip install -e .
+      - name: Provision private user session
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$RUNNER_TEMP/telerubik-private"
+          printf '%s' "$RUBIKA_SESSION_B64" | base64 --decode > "$RUBIKA_SESSION_NAME.rp"
+          chmod 600 "$RUBIKA_SESSION_NAME.rp"
+          unset RUBIKA_SESSION_B64
+          test -s "$RUBIKA_SESSION_NAME.rp"
+          echo "Private Rubpy session provisioned."
 
-      - name: Send one harmless test message
-        env:
-          RUBIKA_BOT_TOKEN: ${{ secrets.RUBIKA_BOT_TOKEN }}
-          RUBIKA_DESTINATION_GUID: ${{ inputs.destination_guid }}
-          GITHUB_RUN_ID: ${{ github.run_id }}
+      - name: Install TeleRubik
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Send one generated 1 KiB file through the production user-account adapter
+        shell: bash
         run: |
           python - <<'PY'
           import asyncio
           import os
+          import tempfile
+          from pathlib import Path
+          from telerubik.adapters import RubikaSender
 
           async def main():
-              token = os.environ.get("RUBIKA_BOT_TOKEN", "").strip()
               destination = os.environ.get("RUBIKA_DESTINATION_GUID", "").strip()
-              if not token:
-                  raise SystemExit("Missing repository secret RUBIKA_BOT_TOKEN; no message was sent.")
+              session = os.environ["RUBIKA_SESSION_NAME"]
               if not destination:
-                  raise SystemExit("Destination GUID is empty; no message was sent.")
+                  raise SystemExit("Private destination secret is missing; no file was sent.")
 
+              sender = RubikaSender(session, destination)
               try:
-                  from rubpy.bot import BotClient
-              except ImportError as exc:
-                  raise SystemExit("Installed rubpy package has no BotClient import; no message was sent.") from exc
-
-              client = BotClient(token=token)
-              try:
-                  starter = getattr(client, "start", None)
-                  if starter is not None:
-                      result = starter()
-                      if hasattr(result, "__await__"):
-                          await result
-
-                  message = (
-                      "TeleRubik private-destination smoke test. "
-                      f"GitHub Actions run: {os.environ['GITHUB_RUN_ID']}. "
-                      "This is a single test message."
-                  )
-                  sender = getattr(client, "send_message", None)
-                  if sender is None:
-                      raise RuntimeError("Installed rubpy BotClient has no send_message method; no message was sent.")
-                  result = sender(destination, message)
-                  if hasattr(result, "__await__"):
-                      await result
-                  print("Rubika BotClient send_message returned successfully. Verify the message in the private destination.")
+                  await sender.start()
+                  with tempfile.TemporaryDirectory(prefix="telerubik-smoke-") as directory:
+                      path = Path(directory) / "telerubik-smoke-test.txt"
+                      path.write_bytes(
+                          b"TeleRubik user-session smoke test\\n" + b"x" * 1024
+                      )
+                      result = await sender.send_document(
+                          path,
+                          "TeleRubik: one small-file delivery verification."
+                      )
+                      message_id = (
+                          result.get("message_id")
+                          if isinstance(result, dict)
+                          else getattr(result, "message_id", None)
+                      )
+                      if not message_id:
+                          raise RuntimeError("Rubika accepted no verifiable message identifier.")
+                      print(
+                          "SMOKE_TEST_ACCEPTED: stage=complete "
+                          f"file_bytes={path.stat().st_size} "
+                          f"response_type={type(result).__name__}"
+                      )
               finally:
-                  for name in ("stop", "close", "disconnect"):
-                      closer = getattr(client, name, None)
-                      if closer is not None:
-                          result = closer()
-                          if hasattr(result, "__await__"):
-                              await result
-                          break
+                  await sender.close()
 
           asyncio.run(main())
           PY
+
+      - name: Remove private session and temporary files
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$RUNNER_TEMP/telerubik-private"
