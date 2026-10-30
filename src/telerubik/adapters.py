@@ -155,9 +155,19 @@ class RubikaSender:
     def _validate_send_result(result: Any) -> None:
         if result is None:
             raise RuntimeError("Rubpy returned no result for send_message")
-        status = result.get("status") if isinstance(result, dict) else getattr(result, "status", None)
+        def field(value: Any, name: str) -> Any:
+            return value.get(name) if isinstance(value, dict) else getattr(value, name, None)
+
+        status = field(result, "status")
+        status_det = field(result, "status_det")
         if status is not None and str(status).strip().upper() not in {"OK", "SUCCESS", "SUCCESSFUL"}:
             raise RuntimeError("Rubika rejected the message (non-success response status)")
+        if status_det is not None and str(status_det).strip().upper() not in {"OK", "SUCCESS", "SUCCESSFUL"}:
+            raise RuntimeError("Rubika rejected the message (non-success response detail)")
+        if field(result, "error"):
+            raise RuntimeError("Rubika returned an error for the message")
+        if status is None and status_det is None:
+            raise RuntimeError("Rubika response did not contain an explicit success status")
 
     async def _send_chunked_document(self, path: Path, caption: str) -> dict[str, Any]:
         """Upload one bounded-size part at a time, then publish its integrity manifest.
@@ -210,6 +220,8 @@ class RubikaSender:
                         "sha256": part_digest.hexdigest(),
                     })
                     part_caption = (
+                        (caption.strip() + "\n\n") if index == 1 and caption.strip() else ""
+                    ) + (
                         f"{path.name} | PART {index:04d}/{total_parts:04d}\n"
                         f"Bytes: {part_bytes} | SHA-256: {part_digest.hexdigest()}\n"
                         "Join parts in ascending order; verify with the manifest."
