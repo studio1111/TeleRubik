@@ -29,7 +29,7 @@ async def _run(settings: Settings, queue: TransferQueue) -> None:
     settings.telegram_session_path.parent.mkdir(parents=True, exist_ok=True)
     settings.download_dir.mkdir(parents=True, exist_ok=True)
     client = TelegramClient(str(settings.telegram_session_path), settings.telegram_api_id, settings.telegram_api_hash)
-    sender = RubikaSender(settings.rubika_bot_token, settings.rubika_destination_guid)
+    sender = RubikaSender(settings.rubika_session_name, settings.rubika_destination_guid)
     await client.start()
     if not settings.dry_run: await sender.start()
 
