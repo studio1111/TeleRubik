@@ -78,7 +78,7 @@ class RubikaSender:
         logger.setLevel(logging.WARNING)
         logger.propagate = False
 
-        self.client = Client(name=self.session_name, logger=logger)
+        self.client = Client(name=self.session_name, platform="Android", logger=logger)
         try:
             await _resolve(self.client.connect())
             if not self.client.auth or not self.client.private_key:
