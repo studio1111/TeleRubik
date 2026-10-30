@@ -17,8 +17,9 @@ class TransferEngine:
         self.retry_base_seconds, self.dry_run = retry_base_seconds, dry_run
         self.download_dir.mkdir(parents=True, exist_ok=True)
 
-    async def process_one(self, downloader: Downloader, sender: Sender) -> bool:
-        job = self.queue.next_pending()
+    async def process_one(self, downloader: Downloader, sender: Sender, source_chat: str | None = None, message_id: int | None = None) -> bool:
+        """Process one job; when scoped, never claim a different queued message."""
+        job = self.queue.next_pending(source_chat=source_chat, message_id=message_id)
         if job is None:
             return False
         path: Path | None = None
