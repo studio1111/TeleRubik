@@ -17,7 +17,10 @@
 - [x] Keep live sending disabled by default.
 - [x] Make dry-run previews non-destructive: keep jobs pending, avoid retry-count changes, and isolate preview downloads from retained live-retry cache.
 - [x] Run CI on Python 3.11, 3.12 and 3.13 and fix any failures (latest checked head passed all jobs).
-- [ ] Verify exact behavior against installed rubpy==7.3.5, including response-level errors and large files.
+- [x] Inspect the pinned rubpy==7.3.5 source contract: SQLite session schema, restored auth fields, AES passphrase derivation, 1 MiB upload streaming, Builder status validation and the returned Update(data) shape.
+- [x] Adapt the sender to Rubpy 7.3.5 response semantics, including explicit outer status-pair checks and message-ID validation for successful Update payloads.
+- [x] Replace Rubpy 7.3.5's certificate-verification-disabled aiohttp session with a certificate-verified TLS session before the first authenticated API request.
+- [ ] Run a live runtime smoke test with the authorized session and private Rubika destination.
 - [ ] Run an end-to-end transfer to a private Rubika destination using an authorized session.
 - [ ] Add persistent worker hosting only after runtime behavior and session storage are validated.
 
