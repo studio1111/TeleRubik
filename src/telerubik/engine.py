@@ -65,7 +65,7 @@ class TransferEngine:
             return True
         except Exception as exc:
             status = self.queue.retry_or_fail(
-                job.id, self.max_retries, f"{type(exc).__name__}: {exc}"
+                job.id, self.max_retries, type(exc).__name__
             )
             log.warning("Transfer job %s %s: %s", job.id, status, type(exc).__name__)
             if status == "pending":
