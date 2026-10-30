@@ -50,6 +50,22 @@ telerubik run
 
 Dry-run downloads and validates files but does not upload them. For a real test, first verify that the Rubpy session is authenticated and the destination is private; then set `TELERUBIK_DRY_RUN=false`. Do not enable live transfer until the pinned Rubpy API is verified.
 
+
+## Secure Rubpy session for GitHub Actions
+
+Rubpy 7.3.5 stores a user session in a SQLite database with the `.rp` suffix (for example, `private/rubika_session.rp`). The session contains account-authentication material and must be treated as a password. Do not commit it, upload it as a normal artifact, or paste it into chat.
+
+To provision GitHub Actions after creating and testing the Rubpy session locally:
+
+1. Close the local Rubpy client cleanly so its SQLite database is flushed.
+2. Base64-encode the complete `private/rubika_session.rp` file on the device where you authenticated. Keep the output private.
+3. In the repository's **Settings → Secrets and variables → Actions**, create the repository secret `RUBIKA_SESSION_B64` with that base64 text as its value. Do not create a secret containing only the session name.
+4. Run **Actions → Rubika session preflight → Run workflow**. The workflow restores the session into a private file, checks the SQLite integrity and Rubpy schema, then removes the temporary session file.
+
+The preflight validates the stored session file's structure; it does not yet prove that Rubika accepts the session or that a message can be sent. A separate authenticated connection check and a private end-to-end transfer are still required before disabling dry-run.
+
+The session restore helper reads `RUBIKA_SESSION_B64`, writes `private/rubika_session.rp` with owner-only permissions, and never prints session contents. The existing `RUBIKA_SESSION_NAME` setting remains a path/name, not a credential. The destination GUID is already configured separately as `RUBIKA_DESTINATION_GUID`.
+
 ## File-size and large-file behavior
 
 The worker currently rejects files larger than `TELERUBIK_MAX_FILE_SIZE_MB` before downloading when Telegram provides the size, and validates the actual downloaded size before upload. The default is 2048 MiB (2 GiB). Do not assume that a large file can be sent merely by increasing this setting: actual Rubika server limits and Rubpy's upload behavior must be tested. The local chunk/manifest utility, where present, is not Rubika-native resumable upload and is not automatically sent as one reconstructed file.
