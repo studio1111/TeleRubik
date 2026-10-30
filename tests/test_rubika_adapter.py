@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import ANY, AsyncMock, Mock, patch
 
+from rubpy.types import Update as RubpyUpdate
+
 from telerubik.adapters import RubikaSender, _validate_authenticated_session
 
 
@@ -88,6 +90,15 @@ class RubikaSessionValidationTests(unittest.TestCase):
 
 
 class RubikaSenderTests(unittest.TestCase):
+    def test_accepts_pinned_rubpy_update_payload_after_builder_validates_outer_status(self):
+        result = RubpyUpdate({"message_id": "rubika-message-123", "object_guid": "destination"})
+        RubikaSender._validate_send_result(result)
+
+    def test_rejects_rubpy_update_without_message_identifier(self):
+        result = RubpyUpdate({"file_inline": {"file_id": "uploaded-only"}})
+        with self.assertRaisesRegex(RuntimeError, "verifiable success result"):
+            RubikaSender._validate_send_result(result)
+
     def _start_sender(self, sender, fake_client, modules):
         stack = patch.dict(sys.modules, modules)
         stack.start()
