@@ -1,6 +1,9 @@
 name: Remote single-file transfer
 
 on:
+  # Keep this manual-transfer workflow explicitly inert on branch pushes.
+  push:
+    branches: ["**"]
   workflow_dispatch:
     inputs:
       allow_live_send:
@@ -18,6 +21,7 @@ concurrency:
 
 jobs:
   transfer:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     name: Transfer approved Telegram message 1734
     runs-on: ubuntu-latest
     timeout-minutes: 360
