@@ -6,112 +6,165 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import ANY, AsyncMock, Mock, patch
 
 from telerubik.adapters import RubikaSender
 
 
+def fake_rubpy_modules(client):
+    rubpy_module = types.ModuleType("rubpy")
+    rubpy_module.__path__ = []
+    rubpy_module.Client = Mock(return_value=client)
+
+    crypto_module = types.ModuleType("rubpy.crypto")
+    crypto_module.Crypto = types.SimpleNamespace(decode_auth=Mock(return_value="decoded-auth"))
+
+    crypto_package = types.ModuleType("Crypto")
+    crypto_package.__path__ = []
+    public_key_module = types.ModuleType("Crypto.PublicKey")
+    public_key_module.RSA = types.SimpleNamespace(import_key=Mock(return_value="rsa-key"))
+    signature_module = types.ModuleType("Crypto.Signature")
+    signature_module.pkcs1_15 = types.SimpleNamespace(new=Mock(return_value="signing-key"))
+
+    return {
+        "rubpy": rubpy_module,
+        "rubpy.crypto": crypto_module,
+        "Crypto": crypto_package,
+        "Crypto.PublicKey": public_key_module,
+        "Crypto.Signature": signature_module,
+    }
+
+
+def make_fake_client():
+    client = Mock()
+    client.auth = "fake-auth"
+    client.private_key = "fake-private-key"
+    client.connect = AsyncMock()
+    client.get_me = AsyncMock(
+        return_value=types.SimpleNamespace(
+            user=types.SimpleNamespace(user_guid="authenticated-user-guid")
+        )
+    )
+    client.disconnect = AsyncMock()
+    return client
+
+
 class RubikaSenderTests(unittest.TestCase):
+    def _start_sender(self, sender, fake_client, modules):
+        stack = patch.dict(sys.modules, modules)
+        stack.start()
+        validation = patch(
+            "telerubik.adapters._validate_authenticated_session",
+            return_value=Path("private/rubika_session.rp"),
+        )
+        validation.start()
+        self.addCleanup(validation.stop)
+        self.addCleanup(stack.stop)
+        return fake_client
+
     def test_upload_then_send_uses_uploaded_file_metadata_and_caption(self):
         async def scenario():
-            fake_client = Mock()
-            fake_client.start = AsyncMock()
+            fake_client = make_fake_client()
             fake_client.upload = AsyncMock(return_value={"file_id": "abc", "access_hash": "xyz"})
             fake_client.send_message = AsyncMock(return_value={"status": "OK"})
-            fake_client.disconnect = AsyncMock()
-            rubpy_module = types.ModuleType("rubpy")
-            rubpy_module.Client = Mock(return_value=fake_client)
-            with patch.dict(sys.modules, {"rubpy": rubpy_module}):
-                with tempfile.TemporaryDirectory() as directory:
-                    path = Path(directory) / "episode.mkv"
-                    path.write_bytes(b"video")
-                    sender = RubikaSender("./private/rubika_session", "destination-guid")
-                    await sender.start()
-                    result = await sender.send_document(path, "Episode caption")
-                    self.assertEqual(result, {"status": "OK"})
-                    rubpy_module.Client.assert_called_once_with(name="./private/rubika_session")
-                    fake_client.upload.assert_awaited_once_with(str(path), file_name="episode.mkv")
-                    fake_client.send_message.assert_awaited_once_with(
-                        object_guid="destination-guid",
-                        text="Episode caption",
-                        file_inline={"file_id": "abc", "access_hash": "xyz"},
-                    )
-                    await sender.close()
-                    fake_client.disconnect.assert_awaited_once()
+            rubpy_modules = fake_rubpy_modules(fake_client)
+            with patch.dict(sys.modules, rubpy_modules):
+                with patch("telerubik.adapters._validate_authenticated_session"):
+                    with tempfile.TemporaryDirectory() as directory:
+                        path = Path(directory) / "episode.mkv"
+                        path.write_bytes(b"video")
+                        sender = RubikaSender("./private/rubika_session", "destination-guid")
+                        await sender.start()
+                        result = await sender.send_document(path, "Episode caption")
+                        self.assertEqual(result, {"status": "OK"})
+                        rubpy_modules["rubpy"].Client.assert_called_once_with(
+                            name="./private/rubika_session", logger=ANY
+                        )
+                        fake_client.connect.assert_awaited_once()
+                        fake_client.get_me.assert_awaited_once()
+                        self.assertEqual(fake_client.guid, "authenticated-user-guid")
+                        fake_client.upload.assert_awaited_once_with(str(path), file_name="episode.mkv")
+                        fake_client.send_message.assert_awaited_once_with(
+                            object_guid="destination-guid",
+                            text="Episode caption",
+                            file_inline={"file_id": "abc", "access_hash": "xyz"},
+                        )
+                        await sender.close()
+                        fake_client.disconnect.assert_awaited_once()
 
         asyncio.run(scenario())
 
     def test_empty_caption_is_sent_as_none(self):
         async def scenario():
-            fake_client = Mock()
+            fake_client = make_fake_client()
             fake_client.upload = AsyncMock(return_value={"file_id": "abc"})
             fake_client.send_message = AsyncMock(return_value={"status": "OK"})
-            rubpy_module = types.ModuleType("rubpy")
-            rubpy_module.Client = Mock(return_value=fake_client)
-            with patch.dict(sys.modules, {"rubpy": rubpy_module}):
-                with tempfile.TemporaryDirectory() as directory:
-                    path = Path(directory) / "file.bin"
-                    path.write_bytes(b"x")
-                    sender = RubikaSender("session", "destination")
-                    await sender.start()
-                    await sender.send_document(path, "  ")
-                    self.assertIsNone(fake_client.send_message.await_args.kwargs["text"])
-                    await sender.close()
+            rubpy_modules = fake_rubpy_modules(fake_client)
+            with patch.dict(sys.modules, rubpy_modules):
+                with patch("telerubik.adapters._validate_authenticated_session"):
+                    with tempfile.TemporaryDirectory() as directory:
+                        path = Path(directory) / "file.bin"
+                        path.write_bytes(b"x")
+                        sender = RubikaSender("session", "destination")
+                        await sender.start()
+                        await sender.send_document(path, "  ")
+                        self.assertIsNone(fake_client.send_message.await_args.kwargs["text"])
+                        await sender.close()
 
         asyncio.run(scenario())
 
     def test_text_only_post_skips_upload_and_preserves_text(self):
         async def scenario():
-            fake_client = Mock()
+            fake_client = make_fake_client()
             fake_client.send_message = AsyncMock(return_value={"status": "OK"})
-            rubpy_module = types.ModuleType("rubpy")
-            rubpy_module.Client = Mock(return_value=fake_client)
-            with patch.dict(sys.modules, {"rubpy": rubpy_module}):
-                sender = RubikaSender("session", "destination")
-                await sender.start()
-                await sender.send_document(None, "Text post")
-                fake_client.upload.assert_not_called()
-                fake_client.send_message.assert_awaited_once_with(
-                    object_guid="destination", text="Text post"
-                )
-                await sender.close()
+            rubpy_modules = fake_rubpy_modules(fake_client)
+            with patch.dict(sys.modules, rubpy_modules):
+                with patch("telerubik.adapters._validate_authenticated_session"):
+                    sender = RubikaSender("session", "destination")
+                    await sender.start()
+                    await sender.send_document(None, "Text post")
+                    fake_client.upload.assert_not_called()
+                    fake_client.send_message.assert_awaited_once_with(
+                        object_guid="destination", text="Text post"
+                    )
+                    await sender.close()
 
         asyncio.run(scenario())
 
     def test_missing_upload_metadata_fails_closed(self):
         async def scenario():
-            fake_client = Mock()
+            fake_client = make_fake_client()
             fake_client.upload = AsyncMock(return_value=None)
             fake_client.send_message = AsyncMock()
-            rubpy_module = types.ModuleType("rubpy")
-            rubpy_module.Client = Mock(return_value=fake_client)
-            with patch.dict(sys.modules, {"rubpy": rubpy_module}):
-                with tempfile.TemporaryDirectory() as directory:
-                    path = Path(directory) / "file.bin"
-                    path.write_bytes(b"x")
-                    sender = RubikaSender("session", "destination")
-                    await sender.start()
-                    with self.assertRaisesRegex(RuntimeError, "no usable file metadata"):
-                        await sender.send_document(path, "caption")
-                    fake_client.send_message.assert_not_awaited()
-                    await sender.close()
+            rubpy_modules = fake_rubpy_modules(fake_client)
+            with patch.dict(sys.modules, rubpy_modules):
+                with patch("telerubik.adapters._validate_authenticated_session"):
+                    with tempfile.TemporaryDirectory() as directory:
+                        path = Path(directory) / "file.bin"
+                        path.write_bytes(b"x")
+                        sender = RubikaSender("session", "destination")
+                        await sender.start()
+                        with self.assertRaisesRegex(RuntimeError, "no usable file metadata"):
+                            await sender.send_document(path, "caption")
+                        fake_client.send_message.assert_not_awaited()
+                        await sender.close()
 
         asyncio.run(scenario())
 
     def test_missing_local_file_is_not_uploaded(self):
         async def scenario():
-            fake_client = Mock()
+            fake_client = make_fake_client()
             fake_client.upload = AsyncMock()
             fake_client.send_message = AsyncMock()
-            rubpy_module = types.ModuleType("rubpy")
-            rubpy_module.Client = Mock(return_value=fake_client)
-            with patch.dict(sys.modules, {"rubpy": rubpy_module}):
-                sender = RubikaSender("session", "destination")
-                await sender.start()
-                with self.assertRaisesRegex(RuntimeError, "does not exist"):
-                    await sender.send_document(Path("/no/such/file"), "")
-                fake_client.upload.assert_not_awaited()
-                await sender.close()
+            rubpy_modules = fake_rubpy_modules(fake_client)
+            with patch.dict(sys.modules, rubpy_modules):
+                with patch("telerubik.adapters._validate_authenticated_session"):
+                    sender = RubikaSender("session", "destination")
+                    await sender.start()
+                    with self.assertRaisesRegex(RuntimeError, "does not exist"):
+                        await sender.send_document(Path("/no/such/file"), "")
+                    fake_client.upload.assert_not_awaited()
+                    await sender.close()
 
         asyncio.run(scenario())
 
