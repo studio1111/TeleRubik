@@ -3,7 +3,10 @@ from __future__ import annotations
 import inspect
 import logging
 import sqlite3
+import tempfile
 from pathlib import Path
+
+from .chunks import DEFAULT_CHUNK_SIZE, split_file
 from typing import Any
 
 
@@ -124,40 +127,78 @@ class RubikaSender:
         # Do not mutate library-owned objects.
         return dict(candidate)
 
-    async def send_document(self, path: Path | None, caption: str) -> Any:
+    async def _send_single_document(self, path: Path, caption: str) -> Any:
         if self.client is None:
             raise RuntimeError("Rubika sender has not been started")
+        path = Path(path)
+        if not path.is_file():
+            raise RuntimeError("Upload source file does not exist")
+        upload_method = getattr(self.client, "upload", None)
         send_method = getattr(self.client, "send_message", None)
-        if send_method is None:
-            raise RuntimeError("Installed Rubpy Client lacks send_message")
-        if path is None:
-            if not caption.strip():
-                raise RuntimeError("Text-only Telegram post has no text")
-            result = await _resolve(
-                send_method(object_guid=self.destination_guid, text=caption.strip())
+        if upload_method is None or send_method is None:
+            raise RuntimeError("Installed Rubpy Client lacks upload/send_message; refusing unsafe fallback")
+        uploaded = await _resolve(upload_method(str(path), file_name=path.name))
+        file_inline = self._file_inline(uploaded)
+        result = await _resolve(
+            send_method(
+                object_guid=self.destination_guid,
+                text=caption.strip() or None,
+                file_inline=file_inline,
             )
-        else:
-            path = Path(path)
-            if not path.is_file():
-                raise RuntimeError("Upload source file does not exist")
-            upload_method = getattr(self.client, "upload", None)
-            if upload_method is None:
-                raise RuntimeError("Installed Rubpy Client lacks upload; refusing unsafe fallback")
-            uploaded = await _resolve(upload_method(str(path), file_name=path.name))
-            file_inline = self._file_inline(uploaded)
-            result = await _resolve(
-                send_method(
-                    object_guid=self.destination_guid,
-                    text=caption.strip() or None,
-                    file_inline=file_inline,
-                )
-            )
+        )
+        self._validate_send_result(result)
+        return result
+
+    @staticmethod
+    def _validate_send_result(result: Any) -> None:
         if result is None:
             raise RuntimeError("Rubpy returned no result for send_message")
         status = result.get("status") if isinstance(result, dict) else getattr(result, "status", None)
         if status is not None and str(status).strip().upper() not in {"OK", "SUCCESS", "SUCCESSFUL"}:
             raise RuntimeError("Rubika rejected the message (non-success response status)")
-        return result
+
+    async def send_document(self, path: Path | None, caption: str) -> Any:
+        if self.client is None:
+            raise RuntimeError("Rubika sender has not been started")
+        if path is None:
+            if not caption.strip():
+                raise RuntimeError("Text-only Telegram post has no text")
+            result = await _resolve(
+                self.client.send_message(object_guid=self.destination_guid, text=caption.strip())
+            )
+            self._validate_send_result(result)
+            return result
+
+        path = Path(path)
+        if not path.is_file():
+            raise RuntimeError("Upload source file does not exist")
+        if path.stat().st_size <= DEFAULT_CHUNK_SIZE:
+            return await self._send_single_document(path, caption)
+
+        # Upload numbered chunks sequentially; send the integrity manifest last.
+        # A failed part aborts the sequence so the queue can retry the job.
+        with tempfile.TemporaryDirectory(prefix="telerubik-chunks-") as temporary:
+            chunk_dir = Path(temporary)
+            manifest = split_file(path, chunk_dir, DEFAULT_CHUNK_SIZE)
+            total = manifest["total_parts"]
+            for part in manifest["parts"]:
+                part_path = chunk_dir / part["filename"]
+                part_caption = (
+                    f"{path.name} | PART {part['index']:04d}/{total:04d}\\n"
+                    f"Bytes: {part['size_bytes']} | SHA-256: {part['sha256']}\\n"
+                    "Join parts in ascending order; verify with the manifest."
+                )
+                await self._send_single_document(part_path, part_caption)
+            manifest_path = chunk_dir / f"{path.name}.manifest.json"
+            manifest_caption = (
+                f"CHUNK MANIFEST: {path.name}\\n"
+                f"Parts: {total} | Total bytes: {manifest['total_bytes']}\\n"
+                f"Full-file SHA-256: {manifest['sha256']}\\n"
+                "Download all numbered parts and this JSON manifest, then reassemble "
+                "in order and verify SHA-256."
+            )
+            await self._send_single_document(manifest_path, manifest_caption)
+            return {"status": "OK", "chunked": True, "parts": total, "sha256": manifest["sha256"]}
 
     async def close(self) -> None:
         if self.client is None:
