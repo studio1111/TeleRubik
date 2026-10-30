@@ -157,6 +157,8 @@ class RubikaSender:
         path = Path(path)
         if not path.is_file():
             raise RuntimeError("Upload source file does not exist")
+        if path.stat().st_size <= 0:
+            raise RuntimeError("Empty files cannot be uploaded through Rubpy 7.3.5")
         upload_method = getattr(self.client, "upload", None)
         send_method = getattr(self.client, "send_message", None)
         if upload_method is None or send_method is None:
