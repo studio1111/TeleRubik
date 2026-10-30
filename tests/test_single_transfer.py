@@ -113,6 +113,8 @@ class SingleTransferTests(unittest.TestCase):
                 with patch.dict(sys.modules, self._telethon_modules(client)):
                     with patch("telerubik.single_transfer.RubikaSender") as sender_type:
                         sender_type.return_value.close = AsyncMock()
+                        sender_type.return_value.start = AsyncMock()
+                        sender_type.return_value.send_document = AsyncMock()
                         with self.assertRaisesRegex(RuntimeError, "does not match"):
                             await transfer_one(settings_for(directory), "@Animehighbo", 1734, "expected.mkv")
                         sender_type.return_value.start.assert_not_awaited()
