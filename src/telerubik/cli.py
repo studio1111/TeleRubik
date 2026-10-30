@@ -10,7 +10,7 @@ from .adapters import RubikaSender
 from .config import ConfigurationError, Settings
 from .engine import TransferEngine
 from .queue import TransferQueue
-from .security import safe_filename
+from .security import safe_filename, sha256_file
 
 def _build_parser():
     parser = argparse.ArgumentParser(prog="telerubik", description="Transfer authorized Telegram posts and media to Rubika.")
@@ -96,8 +96,49 @@ async def _run(settings: Settings, queue: TransferQueue, single_job: tuple[str, 
         if not message or not message.media or getattr(message, "file", None) is None:
             return None
         name = safe_filename(getattr(getattr(message, "file", None), "name", None) or job.filename)
-        result = await client.download_media(message, file=str(directory / f"{job.id}-{name}"))
-        return Path(result) if result else None
+        expected_size = getattr(message.file, "size", None)
+        cached_path = directory / f"{job.id}-{name}"
+        sidecar = cached_path.with_name(cached_path.name + ".sha256")
+
+        # Reuse only a complete cache entry with an integrity sidecar. If a prior
+        # process was interrupted during download, discard the incomplete entry.
+        if cached_path.is_file() and sidecar.is_file() and expected_size is not None:
+            try:
+                expected_hash = sidecar.read_text(encoding="ascii").strip()
+                if (
+                    cached_path.stat().st_size == expected_size
+                    and len(expected_hash) == 64
+                    and sha256_file(cached_path) == expected_hash
+                ):
+                    logging.info("Reusing verified cached download job=%s bytes=%s", job.id, expected_size)
+                    return cached_path
+            except (OSError, UnicodeError):
+                pass
+        for stale in (cached_path, sidecar):
+            try:
+                stale.unlink()
+            except FileNotFoundError:
+                pass
+
+        result = await client.download_media(message, file=str(cached_path))
+        if not result:
+            return None
+        downloaded_path = Path(result).resolve()
+        if downloaded_path != cached_path.resolve():
+            raise RuntimeError("Telegram downloader returned an unexpected cache path")
+        if expected_size is None or cached_path.stat().st_size != expected_size:
+            raise RuntimeError("Downloaded file size does not match Telegram metadata")
+        digest = sha256_file(cached_path)
+        temporary_sidecar = sidecar.with_name(sidecar.name + ".tmp")
+        try:
+            temporary_sidecar.write_text(digest + "\n", encoding="ascii")
+            temporary_sidecar.replace(sidecar)
+        finally:
+            try:
+                temporary_sidecar.unlink()
+            except FileNotFoundError:
+                pass
+        return cached_path
 
     async def upload(path: Path | None, caption: str, job):
         await sender.send_job(path, caption, job)
