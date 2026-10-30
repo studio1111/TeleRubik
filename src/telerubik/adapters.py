@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import inspect
+import logging
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +10,44 @@ from typing import Any
 async def _resolve(value: Any) -> Any:
     """Accept both awaitable and synchronous Rubpy implementations."""
     return await value if inspect.isawaitable(value) else value
+
+
+def _validate_authenticated_session(session_name: str) -> Path:
+    """Check the local Rubpy SQLite session before starting a non-interactive worker."""
+    name = Path(session_name).expanduser()
+    path = name if name.suffix == ".rp" else Path(f"{name}.rp")
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError("An authenticated Rubpy .rp session is required; create it locally first")
+    try:
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            check = connection.execute("PRAGMA quick_check").fetchone()
+            if not check or check[0] != "ok":
+                raise RuntimeError("Rubpy session database failed integrity validation")
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            if not {"version", "session"}.issubset(tables):
+                raise RuntimeError("Rubpy session database has an unexpected schema")
+            columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(session)")
+            }
+            required = {"phone", "auth", "guid", "agent", "private_key"}
+            if not required.issubset(columns):
+                raise RuntimeError("Rubpy session database is missing required fields")
+            row = connection.execute(
+                "SELECT phone, auth, guid, agent, private_key FROM session LIMIT 1"
+            ).fetchone()
+            if not row or not all(isinstance(value, str) and value for value in row):
+                raise RuntimeError("Rubpy session is not authenticated")
+        finally:
+            connection.close()
+    except sqlite3.Error:
+        raise RuntimeError("Rubpy session database could not be validated") from None
+    return path
 
 
 class RubikaSender:
@@ -27,10 +67,47 @@ class RubikaSender:
             from rubpy import Client
         except ImportError as exc:
             raise RuntimeError("Rubpy is missing; install the pinned project dependencies") from exc
-        self.client = Client(name=self.session_name)
-        starter = getattr(self.client, "start", None)
-        if starter is not None:
-            await _resolve(starter())
+
+        _validate_authenticated_session(self.session_name)
+
+        # Rubpy 7.3.5 logs the entire stored SQLite session at INFO in connect().
+        # Give it an isolated WARNING-only logger so auth/private-key values cannot
+        # leak into the worker's INFO logs.
+        logger = logging.getLogger(f"telerubik.rubpy.{id(self)}")
+        logger.addHandler(logging.NullHandler())
+        logger.setLevel(logging.WARNING)
+        logger.propagate = False
+
+        self.client = Client(name=self.session_name, logger=logger)
+        try:
+            await _resolve(self.client.connect())
+            if not self.client.auth or not self.client.private_key:
+                raise RuntimeError("Rubpy session does not contain authentication material")
+
+            from rubpy.crypto import Crypto
+            from Crypto.PublicKey import RSA
+            from Crypto.Signature import pkcs1_15
+
+            self.client.decode_auth = Crypto.decode_auth(self.client.auth)
+            self.client.import_key = pkcs1_15.new(
+                RSA.import_key(self.client.private_key.encode())
+            )
+            me = await _resolve(self.client.get_me())
+            guid = getattr(getattr(me, "user", None), "user_guid", None)
+            if not guid:
+                raise RuntimeError("Rubika did not return the authenticated account GUID")
+            self.client.guid = guid
+        except Exception as exc:
+            client, self.client = self.client, None
+            if client is not None:
+                try:
+                    await _resolve(client.disconnect())
+                except Exception:
+                    pass
+            raise RuntimeError(
+                f"Rubpy session verification failed ({type(exc).__name__}); "
+                "authenticate the session locally again"
+            ) from None
 
     @staticmethod
     def _file_inline(uploaded: Any) -> dict[str, Any]:
@@ -79,9 +156,7 @@ class RubikaSender:
             raise RuntimeError("Rubpy returned no result for send_message")
         status = result.get("status") if isinstance(result, dict) else getattr(result, "status", None)
         if status is not None and str(status).strip().upper() not in {"OK", "SUCCESS", "SUCCESSFUL"}:
-            # Avoid including the response body, which may contain user data.
             raise RuntimeError("Rubika rejected the message (non-success response status)")
-        # Transport exceptions and explicit API errors propagate to the retry queue.
         return result
 
     async def close(self) -> None:
