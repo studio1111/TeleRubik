@@ -8,7 +8,8 @@
 
 - Telethon polling of configured Telegram chats, including text-only posts and media captions.
 - Durable, idempotent SQLite queue keyed by source chat and message ID.
-- Bounded retries and recovery of jobs interrupted while processing.\n- SHA-256-verified download cache: failed live uploads retain valid downloads for retry/restart, while successful sends and dry-runs clean them up.
+- Bounded retries and recovery of jobs interrupted while processing.
+- SHA-256-verified download cache: failed live uploads retain valid downloads for retry/restart, while successful sends and dry-runs clean them up.
 - Filename normalization, file-size limits, download-path boundary checks and dry-run by default.
 - Rubpy user-session upload flow: upload file, then send the uploaded file metadata and original caption.
 - Unit tests and GitHub Actions security/CI workflows.
@@ -50,6 +51,16 @@ telerubik run
 
 Dry-run downloads and validates files but does not upload them. For a real test, first verify that the Rubpy session is authenticated and the destination is private; then set `TELERUBIK_DRY_RUN=false`. Do not enable live transfer until the pinned Rubpy API is verified.
 
+
+### Create the export on your authenticated device
+
+After Rubpy has authenticated successfully on your own device and the client has been disconnected cleanly, export the database locally:
+
+```bash
+python scripts/export_rubika_session.py --source private/rubika_session.rp --output private/rubika_session.rp.b64
+```
+
+The exporter validates the Rubpy database and writes a base64 file with owner-only permissions. Open that local file on your device and copy its contents directly into the GitHub Actions secret editor. Never paste the encoded value into a terminal command, issue, chat, or workflow log. The exporter does not create an authenticated session; it only packages an existing one.
 
 ## Secure Rubpy session for GitHub Actions
 
