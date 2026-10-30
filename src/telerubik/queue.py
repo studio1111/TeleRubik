@@ -1,9 +1,10 @@
 from __future__ import annotations
 import json
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 @dataclass(frozen=True)
 class Job:
@@ -34,13 +35,24 @@ class TransferQueue:
                     UNIQUE(source_chat, message_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at);
+                CREATE TABLE IF NOT EXISTS source_cursors (
+                    source_chat TEXT PRIMARY KEY,
+                    message_id INTEGER NOT NULL CHECK(message_id >= 0),
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
             """)
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """Open a transactional SQLite connection and always close it."""
         db = sqlite3.connect(self.db_path, timeout=15)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA foreign_keys = ON")
         db.execute("PRAGMA busy_timeout = 15000")
-        return db
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
     @staticmethod
     def _job(row: sqlite3.Row) -> Job:
         return Job(row["id"], row["source_chat"], row["message_id"], row["filename"], row["caption"], row["status"], row["attempts"], json.loads(row["payload_json"]))
@@ -48,6 +60,15 @@ class TransferQueue:
         with self._connect() as db:
             cursor = db.execute("INSERT OR IGNORE INTO jobs(source_chat,message_id,filename,caption,payload_json) VALUES(?,?,?,?,?)", (str(source_chat), int(message_id), filename, caption, json.dumps(payload or {}, ensure_ascii=False)))
             return cursor.rowcount == 1
+    def iter_pending(self) -> Iterator[Job]:
+        """Yield pending jobs in stable queue order without claiming or mutating them."""
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT * FROM jobs WHERE status='pending' ORDER BY id"
+            )
+            for row in rows:
+                yield self._job(row)
+
     def next_pending(self) -> Job | None:
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -79,6 +100,30 @@ class TransferQueue:
         with self._connect() as db:
             cursor = db.execute("UPDATE jobs SET status='pending', updated_at=CURRENT_TIMESTAMP WHERE status='processing'")
             return cursor.rowcount
+
+    def get_cursor(self, source_chat: str) -> int:
+        """Return the highest message ID scanned for a source, or zero on first run."""
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT message_id FROM source_cursors WHERE source_chat=?",
+                (str(source_chat),),
+            ).fetchone()
+        return int(row["message_id"]) if row else 0
+
+    def set_cursor(self, source_chat: str, message_id: int) -> None:
+        """Advance a source cursor monotonically after a complete scan batch."""
+        if int(message_id) < 0:
+            raise ValueError("message_id must be non-negative")
+        with self._connect() as db:
+            db.execute(
+                """
+                INSERT INTO source_cursors(source_chat, message_id) VALUES(?, ?)
+                ON CONFLICT(source_chat) DO UPDATE SET
+                    message_id=MAX(source_cursors.message_id, excluded.message_id),
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (str(source_chat), int(message_id)),
+            )
 
     def stats(self) -> dict[str, int]:
         with self._connect() as db:

@@ -5,10 +5,24 @@
 - [x] Implement filename and size safety helpers.
 - [x] Implement durable idempotent SQLite queue and retry states.
 - [x] Implement bounded transfer orchestration and temporary-file cleanup.
-- [x] Add Telegram polling and Rubpy adapter boundary.
-- [x] Add unit tests and CI, CodeQL and Dependabot configuration.
-- [ ] Verify exact Rubpy send_document signature against the pinned runtime.
-- [ ] Run an end-to-end transfer to a private test chat before production use.
-- [ ] Add operational service templates after upload flow verification.
+- [x] Implement Telegram polling and a Rubpy user-session upload adapter.
+- [x] Use the Walrus-style user-account flow: upload complete file, then send returned metadata with the original caption.
+- [x] Support text-only posts and media captions.
+- [x] Persist failed-upload downloads with SHA-256 sidecars and verify them before reuse.
+- [x] Validate the local authenticated Rubpy SQLite session before non-interactive worker startup.
+- [x] Suppress Rubpy session logging and keep raw API exception messages out of persistent queue state.
+- [x] Persist monotonic per-source Telegram cursors so subsequent scans do not stop at the initial lookback window.
+- [x] Add adapter tests for upload/send order, empty captions, missing metadata and missing files.
+- [x] Document the user-session requirement and keep secrets/session files out of Git.
+- [x] Keep live sending disabled by default.
+- [x] Make dry-run previews non-destructive: keep jobs pending, avoid retry-count changes, and isolate preview downloads from retained live-retry cache.
+- [x] Run CI on Python 3.11, 3.12 and 3.13 and fix any failures (latest checked head passed all jobs).
+- [ ] Verify exact behavior against installed rubpy==7.3.5, including response-level errors and large files.
+- [ ] Run an end-to-end transfer to a private Rubika destination using an authorized session.
+- [ ] Add persistent worker hosting only after runtime behavior and session storage are validated.
+
+## Explicit boundaries
+
+The upload flow is inspired by inspected open-source implementations but is independently implemented. A successful upload call is not proof that Rubika accepted the final message. Credentials and session files must never be committed or uploaded as ordinary artifacts. CI cannot perform a real account transfer without an authorized session and private destination.
 
 No credentials, session files, or user content belong in this repository.

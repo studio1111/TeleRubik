@@ -9,7 +9,7 @@ from .adapters import RubikaSender
 from .config import ConfigurationError, Settings
 from .engine import TransferEngine
 from .queue import TransferQueue
-from .security import safe_filename
+from .security import cache_sidecar_path, safe_filename, verify_cached_file, write_cache_sidecar
 
 def _build_parser():
     parser = argparse.ArgumentParser(prog="telerubik", description="Transfer authorized Telegram media to Rubika.")
@@ -20,41 +20,158 @@ def _chat_ref(value: str):
     """Telethon expects numeric chat IDs as integers, not username-like strings."""
     return int(value) if value.lstrip("-").isdigit() else value
 
+async def _iter_source_messages(client, chat_ref: str, cursor: int, lookback_limit: int):
+    """Yield incremental messages oldest-first, bounding only the initial import."""
+    if cursor:
+        async for message in client.iter_messages(chat_ref, min_id=cursor, reverse=True):
+            yield message
+        return
+
+    # Telethon returns newest-first by default. Reverse only the bounded first-run
+    # batch so jobs enter the queue in their original chronological order.
+    messages = [
+        message
+        async for message in client.iter_messages(chat_ref, limit=lookback_limit)
+    ]
+    for message in reversed(messages):
+        yield message
+
 async def _run(settings: Settings, queue: TransferQueue) -> None:
     recovered = queue.recover_processing()
     if recovered:
         logging.warning("Recovered %s interrupted queue job(s)", recovered)
     try: from telethon import TelegramClient
     except ImportError as exc: raise RuntimeError("Telethon is missing; install requirements.txt") from exc
-    settings.telegram_session_path.parent.mkdir(parents=True, exist_ok=True)
     settings.download_dir.mkdir(parents=True, exist_ok=True)
-    client = TelegramClient(str(settings.telegram_session_path), settings.telegram_api_id, settings.telegram_api_hash)
-    sender = RubikaSender(settings.rubika_bot_token, settings.rubika_destination_guid)
-    await client.start()
-    if not settings.dry_run: await sender.start()
+    if settings.telegram_session_string:
+        from telethon.sessions import StringSession
+
+        telegram_session = StringSession(settings.telegram_session_string)
+    else:
+        settings.telegram_session_path.parent.mkdir(parents=True, exist_ok=True)
+        telegram_session = str(settings.telegram_session_path)
+
+    client = TelegramClient(
+        telegram_session,
+        settings.telegram_api_id,
+        settings.telegram_api_hash,
+    )
+    sender = RubikaSender(settings.rubika_session_name, settings.rubika_destination_guid)
+    try:
+        # Do not call client.start(): it can prompt for phone/code and hang a
+        # non-interactive worker when its Telegram session is missing/expired.
+        await client.connect()
+        if not await client.is_user_authorized():
+            raise RuntimeError(
+                "Telegram session is not authorized; provide a valid local session "
+                "or TELEGRAM_SESSION_STRING"
+            )
+        if not settings.dry_run:
+            await sender.start()
+    except Exception:
+        await client.disconnect()
+        raise
 
     async def downloader(job, directory: Path):
         entity = await client.get_entity(_chat_ref(job.source_chat))
         message = await client.get_messages(entity, ids=job.message_id)
         if not message or not message.media: return None
         name = safe_filename(getattr(getattr(message, "file", None), "name", None) or job.filename)
-        result = await client.download_media(message, file=str(directory / f"{job.id}-{name}"))
-        return Path(result) if result else None
+        target = (directory / f"{job.id}-{name}").resolve()
+        root = directory.resolve()
+        if root not in target.parents:
+            raise RuntimeError("Resolved Telegram download path escaped the download directory")
+        expected_size = job.payload.get("expected_size")
+        if type(expected_size) is not int or expected_size < 0:
+            expected_size = None
+        if target.exists():
+            if verify_cached_file(target, expected_size):
+                logging.info("Reusing verified cached download for job %s", job.id)
+                return target
+            target.unlink(missing_ok=True)
+            cache_sidecar_path(target).unlink(missing_ok=True)
+        result = await client.download_media(message, file=str(target))
+        if not result:
+            return None
+        downloaded_path = Path(result).resolve()
+        if root not in downloaded_path.parents:
+            raise RuntimeError("Telegram returned a path outside the download directory")
+        if expected_size is not None and downloaded_path.stat().st_size != expected_size:
+            downloaded_path.unlink(missing_ok=True)
+            raise RuntimeError("Downloaded size does not match Telegram metadata")
+        write_cache_sidecar(downloaded_path)
+        return downloaded_path
 
-    async def upload(path: Path, caption: str): await sender.send_document(path, caption)
+    async def upload(path: Path | None, caption: str): await sender.send_document(path, caption)
     engine = TransferEngine(queue, settings.download_dir, settings.max_file_size_bytes, settings.max_retries, settings.retry_base_seconds, settings.dry_run)
     try:
         while True:
             for chat in settings.telegram_source_chats:
                 chat_ref = _chat_ref(chat)
-                async for message in client.iter_messages(chat_ref, limit=settings.lookback_limit):
-                    if not message.media or not getattr(message, "id", None): continue
-                    if settings.allowed_user_ids and getattr(message, "sender_id", None) not in settings.allowed_user_ids: continue
+                source_key = str(chat_ref)
+                cursor = queue.get_cursor(source_key)
+                highest_seen = cursor
+                scanned = queued = duplicates = skipped = 0
+                async for message in _iter_source_messages(
+                    client, chat_ref, cursor, settings.lookback_limit
+                ):
+                    scanned += 1
+                    message_id = getattr(message, "id", None)
+                    if message_id is None:
+                        skipped += 1
+                        continue
+                    highest_seen = max(highest_seen, int(message_id))
+                    caption = getattr(message, "message", "") or ""
+                    if not getattr(message, "media", None) and not caption.strip():
+                        skipped += 1
+                        continue
+                    if settings.allowed_user_ids and getattr(message, "sender_id", None) not in settings.allowed_user_ids:
+                        skipped += 1
+                        continue
                     size = getattr(getattr(message, "file", None), "size", None)
-                    if size is not None and size > settings.max_file_size_bytes: continue
-                    name = safe_filename(getattr(getattr(message, "file", None), "name", None) or f"telegram-{message.id}")
-                    queue.enqueue(str(chat_ref), int(message.id), name, getattr(message, "message", "") or "", {"source_chat": str(chat_ref), "message_id": int(message.id)})
-            while await engine.process_one(downloader, upload): pass
+                    if size is not None and size > settings.max_file_size_bytes:
+                        skipped += 1
+                        continue
+                    name = safe_filename(
+                        getattr(getattr(message, "file", None), "name", None)
+                        or (f"telegram-{message_id}" if message.media else f"text-{message_id}")
+                    )
+                    added = queue.enqueue(
+                        source_key,
+                        int(message_id),
+                        name,
+                        caption,
+                        {
+                            "source_chat": source_key,
+                            "message_id": int(message_id),
+                            "expected_size": size if isinstance(size, int) and size >= 0 else None,
+                            "text_only": not bool(message.media),
+                        },
+                    )
+                    if added:
+                        queued += 1
+                    else:
+                        duplicates += 1
+                # Only persist the cursor after the complete source scan. If
+                # Telegram raises mid-iteration, the next poll safely repeats
+                # the uncommitted range and the queue deduplicates it.
+                if highest_seen > cursor:
+                    queue.set_cursor(source_key, highest_seen)
+                logging.info(
+                    "Source scan chat=%s scanned=%s queued=%s duplicates=%s skipped=%s cursor=%s",
+                    source_key, scanned, queued, duplicates, skipped, highest_seen,
+                )
+            if settings.dry_run:
+                previewed = await engine.preview_pending(downloader)
+                logging.info(
+                    "DRY RUN complete: previewed=%s queue=%s; all jobs remain pending",
+                    previewed,
+                    queue.stats(),
+                )
+            else:
+                while await engine.process_one(downloader, upload):
+                    pass
+                logging.info("Transfer pass complete; queue status: %s", queue.stats())
             await asyncio.sleep(settings.poll_seconds)
     finally:
         await sender.close()
@@ -72,6 +189,10 @@ def main() -> int:
             print(f"Source chats configured: {len(settings.telegram_source_chats)}")
             print(f"Max file size: {settings.max_file_size_bytes // (1024 * 1024)} MiB")
             print(f"Dry run: {settings.dry_run}")
+            print(
+                "Telegram session source: "
+                + ("StringSession secret" if settings.telegram_session_string else "local session file")
+            )
         elif args.command == "status":
             print("Queue status")
             for status, count in queue.stats().items(): print(f"{status}: {count}")

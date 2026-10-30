@@ -1,13 +1,16 @@
 import asyncio
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from telerubik.config import ConfigurationError, Settings
+from telerubik.cli import _iter_source_messages
 from telerubik.engine import TransferEngine
 from telerubik.queue import TransferQueue
-from telerubik.security import safe_filename, validate_file_size
+from telerubik.security import safe_filename, validate_file_size, write_cache_sidecar
 
-BASE_ENV = {"TELEGRAM_API_ID":"12345", "TELEGRAM_API_HASH":"fake-hash", "TELEGRAM_SOURCE_CHATS":"@allowed_channel, -100123", "RUBIKA_BOT_TOKEN":"placeholder-token", "RUBIKA_DESTINATION_GUID":"placeholder-guid"}
+BASE_ENV = {"TELEGRAM_API_ID":"12345", "TELEGRAM_API_HASH":"fake-hash", "TELEGRAM_SOURCE_CHATS":"@allowed_channel, -100123", "RUBIKA_SESSION_NAME":"./private/rubika_session", "RUBIKA_DESTINATION_GUID":"placeholder-guid"}
 
 class SecurityTests(unittest.TestCase):
     def test_filename_drops_path_traversal(self): self.assertEqual(safe_filename("../../../../etc/passwd"), "passwd")
@@ -26,6 +29,18 @@ class SecurityTests(unittest.TestCase):
         self.assertTrue(settings.dry_run)
         self.assertEqual(settings.telegram_source_chats, ("@allowed_channel", "-100123"))
         self.assertEqual(settings.max_retries, 3)
+
+class TelegramSessionConfigTests(unittest.TestCase):
+    def test_uses_optional_string_session_without_echoing_or_changing_it(self):
+        secret = "session-string-secret"
+        settings = Settings.from_env({**BASE_ENV, "TELEGRAM_SESSION_STRING": f"  {secret}  "})
+        self.assertEqual(settings.telegram_session_string, secret)
+
+    def test_empty_string_session_keeps_local_session_file_mode(self):
+        settings = Settings.from_env({**BASE_ENV, "TELEGRAM_SESSION_STRING": "  "})
+        self.assertEqual(settings.telegram_session_string, "")
+        self.assertEqual(settings.telegram_session_path, Path("./private/telegram_session"))
+
 
 class QueueTests(unittest.TestCase):
     def test_enqueue_is_idempotent_and_transitions_are_durable(self):
@@ -61,23 +76,109 @@ class QueueTests(unittest.TestCase):
             self.assertEqual(queue.stats()["failed"], 1)
 
 class EngineTests(unittest.TestCase):
-    def test_dry_run_validates_then_cleans_temporary_file_without_sending(self):
+    def test_dry_run_leaves_media_pending_and_live_run_can_send_it(self):
         async def scenario(tmp):
             root = Path(tmp) / "downloads"
             queue = TransferQueue(Path(tmp) / "queue.sqlite3")
-            queue.enqueue("chat", 8, "video.mp4", "caption")
+            queue.enqueue("chat", 8, "video.mp4", "caption", {"text_only": False})
             sent = []
+            preview_locations = []
+
             async def download(job, directory):
-                path = directory / "video.mp4"
+                preview_locations.append(Path(directory))
+                path = Path(directory) / "video.mp4"
                 path.write_bytes(b"test-media")
                 return path
-            async def send(path, caption): sent.append((path, caption))
-            engine = TransferEngine(queue, root, 100, 1, 1, dry_run=True)
-            self.assertTrue(await engine.process_one(download, send))
+
+            async def send(path, caption):
+                sent.append((path.read_bytes(), caption))
+
+            preview = TransferEngine(queue, root, 100, 1, 1, dry_run=True)
+            self.assertEqual(await preview.preview_pending(download), 1)
             self.assertEqual(sent, [])
-            self.assertEqual(queue.stats()["completed"], 1)
+            self.assertEqual(queue.stats()["pending"], 1)
+            self.assertEqual(queue.stats()["processing"], 0)
+            self.assertEqual(queue.stats()["completed"], 0)
             self.assertEqual(list(root.iterdir()), [])
-        with tempfile.TemporaryDirectory() as tmp: asyncio.run(scenario(tmp))
+            self.assertFalse(preview_locations[0].exists())
+
+            # The next live run must still claim and deliver the exact same job.
+            live = TransferEngine(queue, root, 100, 1, 1, dry_run=False)
+            self.assertTrue(await live.process_one(download, send))
+            self.assertEqual(sent, [(b"test-media", "caption")])
+            self.assertEqual(queue.stats()["completed"], 1)
+            self.assertEqual(queue.stats()["pending"], 0)
+            self.assertEqual(list(root.iterdir()), [])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+    def test_dry_run_text_preview_does_not_send_or_consume_job(self):
+        async def scenario(tmp):
+            queue = TransferQueue(Path(tmp) / "queue.sqlite3")
+            queue.enqueue("chat", 11, "telegram-11", "plain text", {"text_only": True})
+            sent = []
+
+            async def download(job, directory):
+                return None
+
+            async def send(path, caption):
+                sent.append((path, caption))
+
+            engine = TransferEngine(queue, Path(tmp) / "downloads", 100, 1, 1, dry_run=True)
+            self.assertEqual(await engine.preview_pending(download), 1)
+            self.assertEqual(sent, [])
+            self.assertEqual(queue.stats()["pending"], 1)
+            self.assertEqual(queue.stats()["completed"], 0)
+            self.assertEqual(queue.stats()["processing"], 0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+    def test_dry_run_cannot_call_mutating_process_one(self):
+        async def scenario(tmp):
+            queue = TransferQueue(Path(tmp) / "queue.sqlite3")
+            queue.enqueue("chat", 12, "file.bin", "caption")
+            engine = TransferEngine(queue, Path(tmp) / "downloads", 100, 1, 1, dry_run=True)
+
+            async def download(job, directory):
+                return None
+
+            async def send(path, caption):
+                self.fail("dry-run must never invoke the sender")
+
+            with self.assertRaisesRegex(RuntimeError, "preview_pending"):
+                await engine.process_one(download, send)
+            self.assertEqual(queue.stats()["pending"], 1)
+            self.assertEqual(queue.stats()["processing"], 0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+    def test_dry_run_does_not_delete_existing_verified_live_retry_cache(self):
+        async def scenario(tmp):
+            root = Path(tmp) / "downloads"
+            root.mkdir()
+            queue = TransferQueue(Path(tmp) / "queue.sqlite3")
+            queue.enqueue("chat", 13, "cached.bin", "caption", {"text_only": False})
+            cached = root / "1-cached.bin"
+            cached.write_bytes(b"verified-cache")
+            sidecar = write_cache_sidecar(cached)
+
+            async def downloader(job, directory):
+                # Deliberately return an existing path to exercise the boundary:
+                # preview must reject it without deleting the live retry cache.
+                return cached
+
+            engine = TransferEngine(queue, root, 100, 1, 1, dry_run=True)
+            self.assertEqual(await engine.preview_pending(downloader), 1)
+            self.assertEqual(cached.read_bytes(), b"verified-cache")
+            self.assertTrue(sidecar.is_file())
+            self.assertEqual(queue.stats()["pending"], 1)
+            self.assertEqual(queue.stats()["completed"], 0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
 
     def test_rejects_download_path_outside_configured_directory(self):
         async def scenario(tmp):
@@ -92,5 +193,96 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(queue.stats()["failed"], 1)
             self.assertTrue(outside.exists())
         with tempfile.TemporaryDirectory() as tmp: asyncio.run(scenario(tmp))
+
+    def test_failure_does_not_persist_raw_exception_message(self):
+        async def scenario(tmp):
+            queue_path = Path(tmp) / "queue.sqlite3"
+            queue = TransferQueue(queue_path)
+            queue.enqueue("chat", 10, "post.txt", "caption", {"text_only": True})
+
+            async def download(job, directory):
+                return None
+
+            async def send(path, caption):
+                raise RuntimeError("private-token=must-never-be-stored")
+
+            engine = TransferEngine(queue, Path(tmp) / "downloads", 100, 1, 1, dry_run=False)
+            await engine.process_one(download, send)
+            db = sqlite3.connect(queue_path)
+            try:
+                stored_error = db.execute("SELECT last_error FROM jobs").fetchone()[0]
+            finally:
+                db.close()
+            self.assertEqual(stored_error, "RuntimeError")
+            self.assertNotIn("must-never-be-stored", stored_error)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+
+class SourceCursorTests(unittest.TestCase):
+    def test_cursor_is_monotonic_and_defaults_to_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = TransferQueue(Path(tmp) / "state.sqlite3")
+            self.assertEqual(queue.get_cursor("@channel"), 0)
+            queue.set_cursor("@channel", 12)
+            queue.set_cursor("@channel", 9)
+            self.assertEqual(queue.get_cursor("@channel"), 12)
+
+    def test_negative_cursor_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = TransferQueue(Path(tmp) / "state.sqlite3")
+            with self.assertRaises(ValueError):
+                queue.set_cursor("@channel", -1)
+
+    def test_first_scan_is_bounded_and_yields_oldest_first(self):
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+
+            def iter_messages(self, chat, **kwargs):
+                self.calls.append((chat, kwargs))
+
+                async def messages():
+                    for message_id in (30, 20, 10):
+                        yield SimpleNamespace(id=message_id)
+
+                return messages()
+
+        async def scenario():
+            client = FakeClient()
+            result = [
+                message.id
+                async for message in _iter_source_messages(client, "@channel", 0, 3)
+            ]
+            self.assertEqual(result, [10, 20, 30])
+            self.assertEqual(client.calls, [("@channel", {"limit": 3})])
+
+        asyncio.run(scenario())
+
+    def test_incremental_scan_uses_cursor_without_history_limit(self):
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+
+            def iter_messages(self, chat, **kwargs):
+                self.calls.append((chat, kwargs))
+
+                async def messages():
+                    for message_id in (101, 102, 103):
+                        yield SimpleNamespace(id=message_id)
+
+                return messages()
+
+        async def scenario():
+            client = FakeClient()
+            result = [
+                message.id
+                async for message in _iter_source_messages(client, -100123, 100, 25)
+            ]
+            self.assertEqual(result, [101, 102, 103])
+            self.assertEqual(client.calls, [(-100123, {"min_id": 100, "reverse": True})])
+
+        asyncio.run(scenario())
 
 if __name__ == "__main__": unittest.main()
