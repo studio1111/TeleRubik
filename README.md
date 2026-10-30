@@ -8,7 +8,8 @@
 
 - Telethon polling of configured Telegram chats, including text-only posts and media captions.
 - Durable, idempotent SQLite queue keyed by source chat and message ID.
-- Bounded retries and recovery of jobs interrupted while processing.\n- SHA-256-verified download cache: failed live uploads retain valid downloads for retry/restart, while successful sends and dry-runs clean them up.
+- Bounded retries and recovery of jobs interrupted while processing.
+- SHA-256-verified download cache: failed live uploads retain valid downloads for retry/restart, while successful sends and dry-runs clean them up.
 - Filename normalization, file-size limits, download-path boundary checks and dry-run by default.
 - Rubpy user-session upload flow: upload file, then send the uploaded file metadata and original caption.
 - Unit tests and GitHub Actions security/CI workflows.
@@ -49,6 +50,32 @@ telerubik run
 ```
 
 Dry-run downloads and validates files but does not upload them. For a real test, first verify that the Rubpy session is authenticated and the destination is private; then set `TELERUBIK_DRY_RUN=false`. Do not enable live transfer until the pinned Rubpy API is verified.
+
+
+### Create the export on your authenticated device
+
+After Rubpy has authenticated successfully on your own device and the client has been disconnected cleanly, export the database locally:
+
+```bash
+python scripts/export_rubika_session.py --source private/rubika_session.rp --output private/rubika_session.rp.b64
+```
+
+The exporter validates the Rubpy database and writes a base64 file with owner-only permissions. Open that local file on your device and copy its contents directly into the GitHub Actions secret editor. Never paste the encoded value into a terminal command, issue, chat, or workflow log. The exporter does not create an authenticated session; it only packages an existing one.
+
+## Secure Rubpy session for GitHub Actions
+
+Rubpy 7.3.5 stores a user session in a SQLite database with the `.rp` suffix (for example, `private/rubika_session.rp`). The session contains account-authentication material and must be treated as a password. Do not commit it, upload it as a normal artifact, or paste it into chat.
+
+To provision GitHub Actions after creating and testing the Rubpy session locally:
+
+1. Close the local Rubpy client cleanly so its SQLite database is flushed.
+2. Base64-encode the complete `private/rubika_session.rp` file on the device where you authenticated. Keep the output private.
+3. In the repository's **Settings → Secrets and variables → Actions**, create the repository secret `RUBIKA_SESSION_B64` with that base64 text as its value. Do not create a secret containing only the session name.
+4. Run **Actions → Rubika session preflight → Run workflow**. The workflow restores the session into a private file, checks the SQLite integrity and Rubpy schema, then removes the temporary session file.
+
+The preflight validates the stored session file's structure; it does not yet prove that Rubika accepts the session or that a message can be sent. A separate authenticated connection check and a private end-to-end transfer are still required before disabling dry-run.
+
+The session restore helper reads `RUBIKA_SESSION_B64`, writes `private/rubika_session.rp` with owner-only permissions, and never prints session contents. The existing `RUBIKA_SESSION_NAME` setting remains a path/name, not a credential. The destination GUID is already configured separately as `RUBIKA_DESTINATION_GUID`.
 
 ## File-size and large-file behavior
 
