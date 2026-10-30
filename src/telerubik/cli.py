@@ -13,7 +13,10 @@ from .security import safe_filename
 
 def _build_parser():
     parser = argparse.ArgumentParser(prog="telerubik", description="Transfer authorized Telegram posts and media to Rubika.")
-    parser.add_argument("command", choices=("check", "status", "run"))
+    parser.add_argument("command", choices=("check", "status", "run", "transfer-one"))
+    parser.add_argument("--source-chat", help="Source chat for the one-message transfer")
+    parser.add_argument("--message-id", type=int, help="Exact Telegram message ID for transfer-one")
+    parser.add_argument("--expected-filename", help="Exact filename expected from the source message")
     return parser
 
 def _chat_ref(value: str):
@@ -57,7 +60,7 @@ async def _iter_source_messages(client, chat_ref: str, cursor: int, lookback_lim
     for message in reversed(messages):
         yield message
 
-async def _run(settings: Settings, queue: TransferQueue) -> None:
+async def _run(settings: Settings, queue: TransferQueue, single_job: tuple[str, int, str] | None = None) -> None:
     recovered = queue.recover_processing()
     if recovered:
         logging.warning("Recovered %s interrupted queue job(s)", recovered)
@@ -102,6 +105,36 @@ async def _run(settings: Settings, queue: TransferQueue) -> None:
             await sender.start()
         else:
             logging.info("Dry run is enabled: no messages or media will be sent to Rubika.")
+
+        if single_job is not None:
+            source_chat, message_id, expected_filename = single_job
+            if source_chat not in settings.telegram_source_chats:
+                raise RuntimeError("The single-transfer source chat must be listed in TELEGRAM_SOURCE_CHATS")
+            entity = await client.get_entity(_chat_ref(source_chat))
+            message = await client.get_messages(entity, ids=message_id)
+            if not message or not message.media or getattr(message, "file", None) is None:
+                raise RuntimeError("The selected Telegram message does not contain downloadable media")
+            actual_filename = safe_filename(getattr(message.file, "name", None) or f"telegram-{message_id}")
+            if actual_filename != safe_filename(expected_filename):
+                raise RuntimeError("The selected message filename does not match --expected-filename")
+            size = getattr(message.file, "size", None)
+            if size is None or size <= 0 or size > settings.max_file_size_bytes:
+                raise RuntimeError("The selected file size is missing, invalid, or exceeds the configured limit")
+            payload = {
+                "source_chat": source_chat,
+                "message_id": message_id,
+                "kind": "media",
+                "media_type": _media_type(message),
+                "grouped_id": getattr(message, "grouped_id", None),
+            }
+            queue.enqueue(source_chat, message_id, actual_filename, getattr(message, "message", "") or "", payload)
+            logging.info("Single-transfer scope locked to source=%s message_id=%s filename=%s bytes=%s",
+                         source_chat, message_id, actual_filename, size)
+            while await engine.process_one(downloader, upload, source_chat=source_chat, message_id=message_id):
+                pass
+            logging.info("Single-transfer pass complete; queue status: %s", queue.stats())
+            return
+
         while True:
             for chat in settings.telegram_source_chats:
                 chat_ref = _chat_ref(chat)
@@ -184,7 +217,12 @@ def main() -> int:
             for status, count in queue.stats().items():
                 print(f"{status}: {count}")
         else:
-            asyncio.run(_run(settings, queue))
+            if args.command == "transfer-one":
+                if not args.source_chat or not args.message_id or not args.expected_filename:
+                    raise ConfigurationError("transfer-one requires --source-chat, --message-id, and --expected-filename")
+                asyncio.run(_run(settings, queue, (args.source_chat, args.message_id, args.expected_filename)))
+            else:
+                asyncio.run(_run(settings, queue))
         return 0
     except (ConfigurationError, RuntimeError) as exc:
         logging.error("%s", exc)
