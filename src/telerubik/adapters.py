@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any
 
 from .chunks import DEFAULT_CHUNK_SIZE
-from typing import Any
 
 
 async def _resolve(value: Any) -> Any:
