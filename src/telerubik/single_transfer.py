@@ -59,10 +59,14 @@ async def transfer_one(
             raise RuntimeError("Telegram filename does not match the approved filename")
 
         declared_size = getattr(getattr(message, "file", None), "size", None)
-        if type(declared_size) is not int or not validate_file_size(
+        if type(declared_size) is not int or declared_size <= 0 or not validate_file_size(
             declared_size, settings.max_file_size_bytes
         ):
             raise RuntimeError("Telegram media size is missing, invalid, or exceeds the configured limit")
+
+        # Authenticate and validate the Rubika destination before downloading
+        # a potentially multi-gigabyte Telegram file.
+        await sender.start()
 
         with tempfile.TemporaryDirectory(prefix="telerubik-single-") as temporary:
             root = Path(temporary).resolve()
@@ -81,7 +85,6 @@ async def transfer_one(
             ):
                 raise RuntimeError("Downloaded file size does not match Telegram metadata")
 
-            await sender.start()
             caption = getattr(message, "message", "") or ""
             await sender.send_document(downloaded, caption)
             log.info(
@@ -89,8 +92,10 @@ async def transfer_one(
                 source_chat, message_id, expected, actual_size,
             )
     finally:
-        await sender.close()
-        await client.disconnect()
+        try:
+            await sender.close()
+        finally:
+            await client.disconnect()
 
 
 def _chat_ref(value: str):

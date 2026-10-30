@@ -19,6 +19,24 @@ async def _resolve(value: Any) -> Any:
     return await value if inspect.isawaitable(value) else value
 
 
+async def _enable_verified_rubpy_transport(client: Any) -> None:
+    """Replace Rubpy 7.3.5's TLS-verification-disabled session before API use."""
+    import aiohttp
+
+    connection = getattr(client, "connection", None)
+    old_session = getattr(connection, "session", None)
+    headers = getattr(connection, "headers", None)
+    if old_session is None or not isinstance(headers, dict):
+        raise RuntimeError("Rubpy did not expose the expected network session")
+
+    await _resolve(old_session.close())
+    connection.session = aiohttp.ClientSession(
+        connector=aiohttp.TCPConnector(ssl=True, limit=100),
+        headers=headers,
+        timeout=aiohttp.ClientTimeout(total=client.timeout),
+    )
+
+
 def _validate_authenticated_session(session_name: str) -> Path:
     """Check the local Rubpy SQLite session before starting a non-interactive worker."""
     name = Path(session_name).expanduser()
@@ -87,6 +105,7 @@ class RubikaSender:
         self.client = Client(name=self.session_name, platform="Android", logger=logger)
         try:
             await _resolve(self.client.connect())
+            await _enable_verified_rubpy_transport(self.client)
             if not self.client.auth or not self.client.private_key:
                 raise RuntimeError("Rubpy session does not contain authentication material")
 
@@ -95,6 +114,9 @@ class RubikaSender:
             from Crypto.Signature import pkcs1_15
 
             self.client.decode_auth = Crypto.decode_auth(self.client.auth)
+            # Rubpy's authenticated-session connect() restores auth and private_key,
+            # but does not derive the AES passphrase needed by encrypted API calls.
+            self.client.key = Crypto.passphrase(self.client.auth)
             self.client.import_key = pkcs1_15.new(
                 RSA.import_key(self.client.private_key.encode())
             )
@@ -135,6 +157,8 @@ class RubikaSender:
         path = Path(path)
         if not path.is_file():
             raise RuntimeError("Upload source file does not exist")
+        if path.stat().st_size <= 0:
+            raise RuntimeError("Empty files cannot be uploaded through Rubpy 7.3.5")
         upload_method = getattr(self.client, "upload", None)
         send_method = getattr(self.client, "send_message", None)
         if upload_method is None or send_method is None:
@@ -155,9 +179,28 @@ class RubikaSender:
     def _validate_send_result(result: Any) -> None:
         if result is None:
             raise RuntimeError("Rubpy returned no result for send_message")
-        status = result.get("status") if isinstance(result, dict) else getattr(result, "status", None)
+        def field(value: Any, name: str) -> Any:
+            return value.get(name) if isinstance(value, dict) else getattr(value, name, None)
+
+        status = field(result, "status")
+        status_det = field(result, "status_det")
         if status is not None and str(status).strip().upper() not in {"OK", "SUCCESS", "SUCCESSFUL"}:
             raise RuntimeError("Rubika rejected the message (non-success response status)")
+        if status_det is not None and str(status_det).strip().upper() not in {"OK", "SUCCESS", "SUCCESSFUL"}:
+            raise RuntimeError("Rubika rejected the message (non-success response detail)")
+        if field(result, "error"):
+            raise RuntimeError("Rubika returned an error for the message")
+        if (status is None) != (status_det is None):
+            raise RuntimeError("Rubika response contained an incomplete success status pair")
+        if status is None and status_det is None:
+            # Rubpy 7.3.5 Builder validates the outer status/status_det pair,
+            # then returns Update(result["data"]); that Update intentionally
+            # contains the message payload, not the outer status fields.
+            payload = getattr(result, "original_update", None)
+            message_id = field(result, "message_id")
+            if isinstance(payload, dict) and message_id:
+                return
+            raise RuntimeError("Rubika response did not contain a verifiable success result")
 
     async def _send_chunked_document(self, path: Path, caption: str) -> dict[str, Any]:
         """Upload one bounded-size part at a time, then publish its integrity manifest.
@@ -210,6 +253,8 @@ class RubikaSender:
                         "sha256": part_digest.hexdigest(),
                     })
                     part_caption = (
+                        (caption.strip() + "\n\n") if index == 1 and caption.strip() else ""
+                    ) + (
                         f"{path.name} | PART {index:04d}/{total_parts:04d}\n"
                         f"Bytes: {part_bytes} | SHA-256: {part_digest.hexdigest()}\n"
                         "Join parts in ascending order; verify with the manifest."
