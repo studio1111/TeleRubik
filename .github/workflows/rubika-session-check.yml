@@ -21,8 +21,8 @@ jobs:
       - name: Restore and validate private Rubpy session
         run: python scripts/restore_rubika_session.py
       - name: Run session restoration regression tests
-        run: python -m unittest tests.test_rubika_session_restore -v
+        run: python -m unittest discover -s tests -p 'test_rubika_session_restore.py' -v
       - name: Remove session material
         if: always()
         run: |
-          rm -f private/rubika_session.rp private/rubika_session.rp-journal
+          rm -f private/rubika_session.rp private/rubika_session.rp-journal private/rubika_session.rp-wal private/rubika_session.rp-shm
