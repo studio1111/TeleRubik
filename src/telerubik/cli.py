@@ -19,7 +19,9 @@ def _build_parser():
     transfer = subparsers.add_parser("transfer-one", help="Transfer exactly one approved Telegram message")
     transfer.add_argument("--source-chat", required=True)
     transfer.add_argument("--message-id", required=True, type=int)
-    transfer.add_argument("--expected-filename", required=True)
+    transfer.add_argument("--expected-filename")
+    transfer.add_argument("--expected-mime-type")
+    transfer.add_argument("--expected-size-bytes", type=int)
     return parser
 
 def _chat_ref(value: str):
@@ -204,7 +206,7 @@ def main() -> int:
             for status, count in queue.stats().items(): print(f"{status}: {count}")
         elif args.command == "transfer-one":
             from .single_transfer import transfer_one
-            asyncio.run(transfer_one(settings, args.source_chat, args.message_id, args.expected_filename))
+            asyncio.run(transfer_one(settings, args.source_chat, args.message_id, args.expected_filename, args.expected_mime_type, args.expected_size_bytes))
         else: asyncio.run(_run(settings, queue))
         return 0
     except (ConfigurationError, RuntimeError) as exc:

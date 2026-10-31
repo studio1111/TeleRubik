@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import mimetypes
 import tempfile
 from pathlib import Path
 
@@ -15,14 +16,20 @@ async def transfer_one(
     settings: Settings,
     source_chat: str,
     message_id: int,
-    expected_filename: str,
+    expected_filename: str | None = None,
+    expected_mime_type: str | None = None,
+    expected_size_bytes: int | None = None,
 ) -> None:
     """Fetch, validate and send exactly one Telegram message; never scan a chat."""
     if message_id <= 0:
         raise ValueError("message_id must be positive")
-    expected = safe_filename(expected_filename)
-    if expected != expected_filename or expected in {"", ".", ".."}:
-        raise ValueError("expected_filename must be a plain safe filename")
+    expected = None
+    if expected_filename is not None:
+        expected = safe_filename(expected_filename)
+        if expected != expected_filename or expected in {"", ".", ".."}:
+            raise ValueError("expected_filename must be a plain safe filename")
+    if expected_size_bytes is not None and expected_size_bytes <= 0:
+        raise ValueError("expected_size_bytes must be positive")
     if settings.dry_run:
         raise RuntimeError("transfer-one requires TELERUBIK_DRY_RUN=false")
 
@@ -52,17 +59,25 @@ async def transfer_one(
         if not getattr(message, "media", None):
             raise RuntimeError("The requested Telegram message does not contain media")
 
-        actual_name = safe_filename(
-            getattr(getattr(message, "file", None), "name", None)
-        )
-        if actual_name != expected:
+        file_info = getattr(message, "file", None)
+        raw_name = getattr(file_info, "name", None)
+        actual_name = safe_filename(raw_name) if raw_name else ""
+        mime_type = getattr(file_info, "mime_type", None)
+        if expected is not None and actual_name != expected:
             raise RuntimeError("Telegram filename does not match the approved filename")
+        if expected_mime_type is not None and mime_type != expected_mime_type:
+            raise RuntimeError("Telegram media MIME type does not match the approved MIME type")
 
-        declared_size = getattr(getattr(message, "file", None), "size", None)
+        declared_size = getattr(file_info, "size", None)
         if type(declared_size) is not int or declared_size <= 0 or not validate_file_size(
             declared_size, settings.max_file_size_bytes
         ):
             raise RuntimeError("Telegram media size is missing, invalid, or exceeds the configured limit")
+        if expected_size_bytes is not None and declared_size != expected_size_bytes:
+            raise RuntimeError("Telegram media size does not match the approved size")
+        if expected is None:
+            extension = mimetypes.guess_extension(mime_type or "") or ".bin"
+            expected = f"telegram-{message_id}{extension}"
 
         # Authenticate and validate the Rubika destination before downloading
         # a potentially multi-gigabyte Telegram file.
