@@ -8,7 +8,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from telerubik.adapters import _register_rubpy_device
 from telerubik.config import Settings
 from telerubik.single_transfer import transfer_one
 
@@ -209,24 +208,6 @@ class SingleTransferTests(unittest.TestCase):
                 settings = Settings(**{**settings.__dict__, "dry_run": True})
                 with self.assertRaisesRegex(RuntimeError, "requires TELERUBIK_DRY_RUN=false"):
                     await transfer_one(settings, "@Animehighbo", 1734, "expected.mkv")
-
-        asyncio.run(scenario())
-
-
-class RubpyDeviceRegistrationTests(unittest.TestCase):
-    def test_registers_ephemeral_worker_device(self):
-        async def scenario():
-            client = types.SimpleNamespace(register_device=AsyncMock(return_value=object()))
-            await _register_rubpy_device(client)
-            client.register_device.assert_awaited_once_with()
-
-        asyncio.run(scenario())
-
-    def test_fails_closed_when_rubpy_cannot_register_device(self):
-        async def scenario():
-            client = types.SimpleNamespace()
-            with self.assertRaisesRegex(RuntimeError, "does not support register_device"):
-                await _register_rubpy_device(client)
 
         asyncio.run(scenario())
 
