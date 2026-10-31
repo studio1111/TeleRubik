@@ -87,7 +87,7 @@ class AdapterUploadTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_start_registers_device_once_when_saved_auth_is_not_registered(self):
+    def test_start_requires_local_reauthentication_when_saved_auth_is_not_registered(self):
         async def scenario():
             client_instances = []
 
@@ -99,11 +99,12 @@ class AdapterUploadTests(unittest.TestCase):
                             "stored-agent", "private-key"
                         )
                     )
-                    self.get_me = AsyncMock(side_effect=[
-                        NotRegistered("NOT_REGISTERED"),
-                        SimpleNamespace(user=SimpleNamespace(user_guid="saved-guid")),
-                    ])
-                    self.register_device = AsyncMock(return_value=SimpleNamespace(status="OK"))
+                    self.get_me = AsyncMock(
+                        side_effect=NotRegistered("NOT_REGISTERED")
+                    )
+                    self.register_device = AsyncMock(
+                        return_value=SimpleNamespace(status="OK")
+                    )
                     self.connect = AsyncMock()
                     self.disconnect = AsyncMock()
                     client_instances.append(self)
@@ -135,13 +136,17 @@ class AdapterUploadTests(unittest.TestCase):
                 "telerubik.adapters._enable_verified_rubpy_transport",
                 new=AsyncMock(),
             ):
-                await sender.start()
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "Rubika rejected the saved authorization.*RUBIKA_SESSION_B64",
+                ):
+                    await sender.start()
 
             client = client_instances[0]
-            client.register_device.assert_awaited_once_with()
-            self.assertEqual(client.get_me.await_count, 2)
-            self.assertEqual(client.guid, "saved-guid")
-            await sender.close()
+            client.register_device.assert_not_awaited()
+            client.get_me.assert_awaited_once_with()
+            client.disconnect.assert_awaited_once_with()
+            self.assertIsNone(sender.client)
 
         asyncio.run(scenario())
 
