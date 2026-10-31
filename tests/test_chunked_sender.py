@@ -43,9 +43,9 @@ class ChunkedSenderTests(unittest.TestCase):
                 calls = client.send_message.await_args_list
                 self.assertEqual(len(calls), 4)
                 captions = [call.kwargs["text"] for call in calls]
-                self.assertIn("PART 0001/0003", captions[0])
-                self.assertIn("PART 0002/0003", captions[1])
-                self.assertIn("PART 0003/0003", captions[2])
+                self.assertIn("PART 001/003", captions[0])
+                self.assertIn("PART 002/003", captions[1])
+                self.assertIn("PART 003/003", captions[2])
                 self.assertIn("ZIP PART MANIFEST", captions[3])
                 self.assertTrue(all(item[0].endswith(".zip") for item in uploaded_payloads[:3]))
                 import io
