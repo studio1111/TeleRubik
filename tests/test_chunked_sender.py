@@ -32,7 +32,9 @@ class ChunkedSenderTests(unittest.TestCase):
                 sender = RubikaSender("unused-session", "private-destination")
                 sender.client = client
 
-                with patch("telerubik.adapters.DEFAULT_CHUNK_SIZE", 4):
+                with patch("telerubik.adapters.LARGE_FILE_SPLIT_THRESHOLD", 5), patch(
+                    "telerubik.adapters.LARGE_FILE_PART_SIZE", 4
+                ):
                     result = await sender.send_document(path, "original caption")
 
                 self.assertEqual(result["status"], "OK")
@@ -44,8 +46,15 @@ class ChunkedSenderTests(unittest.TestCase):
                 self.assertIn("PART 0001/0003", captions[0])
                 self.assertIn("PART 0002/0003", captions[1])
                 self.assertIn("PART 0003/0003", captions[2])
-                self.assertIn("CHUNK MANIFEST", captions[3])
-                self.assertEqual([item[1] for item in uploaded_payloads[:3]], [b"abcd", b"efgh", b"ij"])
+                self.assertIn("ZIP PART MANIFEST", captions[3])
+                self.assertTrue(all(item[0].endswith(".zip") for item in uploaded_payloads[:3]))
+                import io
+                import zipfile
+                extracted = []
+                for _, archive_bytes in uploaded_payloads[:3]:
+                    with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
+                        extracted.append(archive.read(archive.namelist()[0]))
+                self.assertEqual(extracted, [b"abcd", b"efgh", b"ij"])
                 self.assertTrue(uploaded_payloads[-1][0].endswith(".manifest.json"))
                 self.assertLessEqual(maximum_live_parts, 1)
                 self.assertEqual(list(Path(temporary).glob("video.mkv.part*")), [])
