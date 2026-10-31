@@ -142,11 +142,11 @@ class RubikaSenderTests(unittest.TestCase):
                 self.assertEqual(fake_client.key, "derived-session-key")
                 self.assertEqual(fake_client.decode_auth, "decoded-auth")
                 self.assertEqual(fake_client.import_key, "signing-key")
+                return types.SimpleNamespace(
+                    user=types.SimpleNamespace(user_guid="authenticated-user-guid")
+                )
 
             fake_client.get_me.side_effect = verify_key_before_api_call
-            fake_client.get_me.return_value = types.SimpleNamespace(
-                user=types.SimpleNamespace(user_guid="authenticated-user-guid")
-            )
             fake_client.upload = AsyncMock(return_value={"file_id": "abc", "access_hash": "xyz"})
             fake_client.send_message = AsyncMock(return_value={"status": "OK", "status_det": "OK"})
             rubpy_modules = fake_rubpy_modules(fake_client)
