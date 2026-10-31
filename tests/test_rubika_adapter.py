@@ -52,6 +52,8 @@ def make_fake_client():
     client.auth = "fake-auth"
     client.private_key = "fake-private-key"
     client.connect = AsyncMock()
+    client.start = AsyncMock()
+    client.guid = "authenticated-user-guid"
     client.original_session = types.SimpleNamespace(close=AsyncMock())
     client.connection = types.SimpleNamespace(
         session=client.original_session,
@@ -130,11 +132,9 @@ class RubikaSenderTests(unittest.TestCase):
 
             async def verify_key_before_api_call():
                 self.assertEqual(fake_client.key, "derived-session-key")
-                return types.SimpleNamespace(
-                    user=types.SimpleNamespace(user_guid="authenticated-user-guid")
-                )
+                fake_client.guid = "authenticated-user-guid"
 
-            fake_client.get_me.side_effect = verify_key_before_api_call
+            fake_client.start.side_effect = verify_key_before_api_call
             fake_client.upload = AsyncMock(return_value={"file_id": "abc", "access_hash": "xyz"})
             fake_client.send_message = AsyncMock(return_value={"status": "OK", "status_det": "OK"})
             rubpy_modules = fake_rubpy_modules(fake_client)
@@ -160,15 +160,19 @@ class RubikaSenderTests(unittest.TestCase):
                             headers={"user-agent": "test-agent"},
                             timeout="verified-timeout",
                         )
-                        fake_client.start.assert_not_called()
-                        fake_client.get_me.assert_awaited_once()
+                        fake_client.start.assert_awaited_once()
+                        fake_client.get_me.assert_not_awaited()
                         self.assertEqual(fake_client.guid, "authenticated-user-guid")
                         rubpy_modules["rubpy.crypto"].Crypto.passphrase.assert_called_once_with("fake-auth")
                         fake_client.upload.assert_awaited_once_with(str(path), file_name="episode.mkv")
                         fake_client.send_message.assert_awaited_once_with(
                             object_guid="destination-guid",
                             text="Episode caption",
-                            file_inline={"file_id": "abc", "access_hash": "xyz"},
+                            file_inline={
+                                "file_id": "abc", "access_hash": "xyz",
+                                "type": "Video", "time": 1, "width": 200,
+                                "height": 200, "music_performer": "", "is_spoil": False,
+                            },
                         )
                         await sender.close()
                         fake_client.disconnect.assert_awaited_once()
@@ -200,7 +204,11 @@ class RubikaSenderTests(unittest.TestCase):
                         await sender.send_document(path, "caption")
                         self.assertEqual(
                             fake_client.send_message.await_args.kwargs["file_inline"],
-                            {"file_id": "property-id", "access_hash": "property-hash"},
+                            {
+                                "file_id": "property-id", "access_hash": "property-hash",
+                                "type": "File", "time": 1, "width": 200,
+                                "height": 200, "music_performer": "", "is_spoil": False,
+                            },
                         )
                         await sender.close()
 

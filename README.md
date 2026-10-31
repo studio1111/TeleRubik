@@ -55,7 +55,16 @@ Dry-run downloads and validates files in an isolated temporary directory but doe
 
 ## File-size and large-file behavior
 
-The worker rejects files larger than `TELERUBIK_MAX_FILE_SIZE_MB` before downloading when Telegram provides the size, and validates the actual downloaded size before upload. The default is 2048 MiB (2 GiB). Files larger than 50 MiB are split into sequential 50 MiB-or-smaller parts; each part is sent as a separate Rubika document with its index and SHA-256, followed by a JSON manifest containing part hashes and the original file hash. This is **not** Rubika-native resumable upload and does not produce one playable file automatically: the receiver must download all parts and the manifest, then reassemble them with `telerubik.chunks.reassemble` (or an equivalent implementation) and verify the final SHA-256. A failure mid-transfer stops the sequence; retrying the queue job may resend earlier parts. The 50 MiB size is a conservative initial choice, not a guarantee that Rubika accepts it. A real private-destination test is still required before claiming end-to-end success.
+The worker rejects files larger than `TELERUBIK_MAX_FILE_SIZE_MB` before downloading when Telegram provides the size, and validates the actual downloaded size before upload. The default is 2048 MiB (2 GiB).
+
+The Rubika sender combines two inspected reference implementations:
+
+- **Walrus-style normal upload:** one Rubika document is uploaded with `client.upload(...)`, then finalized with `client.send_message(file_inline=...)`. File metadata is normalized, media type is selected from the extension, transient finalization errors are retried, and a generic `File` finalization variant is available.
+- **TG2RUB-style large-file handling:** files larger than 1.5 GiB are streamed into sequential ZIP archives of at most 500 MiB each, using `ZIP_STORED` to avoid CPU-heavy recompression. Each archive is uploaded and deleted before the next archive is generated, keeping temporary disk use bounded. A JSON manifest records the original filename, part order, sizes and SHA-256 hashes.
+
+ZIP parts are separate Rubika messages; **Rubika does not merge them into one video automatically**. To reconstruct the original file, download all ZIP parts and the manifest, extract each ZIP, place the numbered `.partNNN` files together, then run `telerubik.chunks.reassemble(manifest, parts_dir, output_path)`. The helper validates every part and the full-file SHA-256 before publishing the reconstructed file. This is a local reassembly step, not a server-side Rubika feature.
+
+A failure mid-transfer stops the sequence; retrying the queue job may resend earlier parts. A 500 MiB part size is the reference project's strategy, not a guarantee of Rubika's current upload limit. A real private-destination test is still required before claiming end-to-end success.
 
 ## Tests
 

@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from telerubik.chunks import reassemble, split_file
+from telerubik.chunks import iter_zip_parts, reassemble, split_file
 
 
 class ChunkUtilityTests(unittest.TestCase):
@@ -89,6 +89,61 @@ class ChunkUtilityTests(unittest.TestCase):
                 reassemble(
                     chunks / "source.bin.manifest.json", chunks, root / "restored.bin"
                 )
+
+
+    def test_streamed_zip_parts_reassemble_and_verify_original_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "large-video.mkv"
+            payload = bytes(range(251)) * 19
+            source.write_bytes(payload)
+            upload_dir = root / "upload-parts"
+            retained_dir = root / "retained-parts"
+            retained_dir.mkdir()
+            manifest = None
+            yielded = 0
+
+            for item in iter_zip_parts(source, upload_dir, part_size=700):
+                if "manifest" in item:
+                    manifest = item["manifest"]
+                    break
+                archive_path = item["archive_path"]
+                self.assertTrue(archive_path.name.endswith(".zip"))
+                retained = retained_dir / archive_path.name
+                retained.write_bytes(archive_path.read_bytes())
+                yielded += 1
+
+            self.assertIsNotNone(manifest)
+            self.assertEqual(yielded, manifest["total_parts"])
+            self.assertEqual(manifest["format"], "telerubik-zip-parts-v1")
+            manifest_path = retained_dir / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            restored = reassemble(manifest_path, retained_dir, root / "restored.mkv")
+            self.assertEqual(restored.read_bytes(), payload)
+            self.assertEqual(hashlib.sha256(restored.read_bytes()).hexdigest(), manifest["sha256"])
+
+    def test_zip_part_reassembly_rejects_corrupted_archive_member(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "video.mkv"
+            source.write_bytes(b"0123456789")
+            part_dir = root / "parts"
+            manifest = None
+            for item in iter_zip_parts(source, part_dir, part_size=4):
+                if "manifest" in item:
+                    manifest = item["manifest"]
+                    break
+            self.assertIsNotNone(manifest)
+            first_archive = part_dir / manifest["parts"][0]["archive_filename"]
+            import zipfile
+            with zipfile.ZipFile(first_archive, "w", compression=zipfile.ZIP_STORED) as archive:
+                archive.writestr(manifest["parts"][0]["member_filename"], b"bad")
+            manifest_path = part_dir / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "size|integrity"):
+                reassemble(manifest_path, part_dir, root / "restored.mkv")
+            self.assertFalse((root / "restored.mkv").exists())
 
 
 if __name__ == "__main__":

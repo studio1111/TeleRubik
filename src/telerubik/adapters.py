@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-import hashlib
+import asyncio
 import inspect
 import json
 import logging
-import math
 import os
 import sqlite3
 import tempfile
 from pathlib import Path
 from typing import Any
 
-from .chunks import DEFAULT_CHUNK_SIZE
+from .chunks import LARGE_FILE_PART_SIZE, LARGE_FILE_SPLIT_THRESHOLD, iter_zip_parts
 
 
 async def _resolve(value: Any) -> Any:
@@ -104,27 +103,21 @@ class RubikaSender:
 
         self.client = Client(name=self.session_name, platform="Android", logger=logger)
         try:
+            # Use the established Rubpy start() lifecycle from Walrus and TG2RUB,
+            # but establish certificate-verified transport before its first API call.
             await _resolve(self.client.connect())
             await _enable_verified_rubpy_transport(self.client)
             if not self.client.auth or not self.client.private_key:
                 raise RuntimeError("Rubpy session does not contain authentication material")
 
             from rubpy.crypto import Crypto
-            from Crypto.PublicKey import RSA
-            from Crypto.Signature import pkcs1_15
-
-            self.client.decode_auth = Crypto.decode_auth(self.client.auth)
-            # Rubpy's authenticated-session connect() restores auth and private_key,
-            # but does not derive the AES passphrase needed by encrypted API calls.
             self.client.key = Crypto.passphrase(self.client.auth)
-            self.client.import_key = pkcs1_15.new(
-                RSA.import_key(self.client.private_key.encode())
-            )
-            me = await _resolve(self.client.get_me())
-            guid = getattr(getattr(me, "user", None), "user_guid", None)
-            if not guid:
+            # start() validates the restored account on this already-connected
+            # client and fills decode_auth, import_key and guid.
+            await _resolve(self.client.start())
+            if not getattr(self.client, "guid", None):
                 raise RuntimeError("Rubika did not return the authenticated account GUID")
-            self.client.guid = guid
+            # Device registration is attempted lazily only after an explicit NOT_REGISTERED response.
         except Exception as exc:
             client, self.client = self.client, None
             if client is not None:
@@ -163,17 +156,64 @@ class RubikaSender:
         send_method = getattr(self.client, "send_message", None)
         if upload_method is None or send_method is None:
             raise RuntimeError("Installed Rubpy Client lacks upload/send_message; refusing unsafe fallback")
-        uploaded = await _resolve(upload_method(str(path), file_name=path.name))
-        file_inline = self._file_inline(uploaded)
-        result = await _resolve(
-            send_method(
-                object_guid=self.destination_guid,
-                text=caption.strip() or None,
-                file_inline=file_inline,
-            )
+        try:
+            uploaded = await _resolve(upload_method(str(path), file_name=path.name))
+        except Exception as exc:
+            # Match Rubpy's own sign-in recovery path, but do not register a new
+            # device on every run. Only do it when requestSendFile explicitly says
+            # NOT_REGISTERED, then retry that upload exactly once.
+            if type(exc).__name__ != "NotRegistered":
+                raise
+            register = getattr(self.client, "register_device", None)
+            if not callable(register):
+                raise RuntimeError("Rubika rejected the upload as NOT_REGISTERED and this Rubpy client cannot register") from None
+            await _resolve(register())
+            uploaded = await _resolve(upload_method(str(path), file_name=path.name))
+
+        base_inline = self._file_inline(uploaded)
+        suffix = path.suffix.lower()
+        preferred_type = (
+            "Video" if suffix in {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".flv"}
+            else "Image" if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
+            else "Music" if suffix in {".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac"}
+            else "File"
         )
-        self._validate_send_result(result)
-        return result
+        variants = [preferred_type] + (["File"] if preferred_type != "File" else [])
+        last_error: Exception | None = None
+        for inline_type in variants:
+            file_inline = dict(base_inline)
+            file_inline.update({
+                "type": inline_type,
+                "time": 1,
+                "width": 200,
+                "height": 200,
+                "music_performer": "",
+                "is_spoil": False,
+            })
+            for attempt in range(1, 4):
+                try:
+                    result = await _resolve(
+                        send_method(
+                            object_guid=self.destination_guid,
+                            text=caption.strip() or None,
+                            file_inline=file_inline,
+                        )
+                    )
+                    self._validate_send_result(result)
+                    return result
+                except Exception as exc:
+                    last_error = exc
+                    error_text = f"{type(exc).__name__} {exc}".lower()
+                    transient = any(token in error_text for token in (
+                        "timeout", "timed out", "connection reset", "connection aborted",
+                        "temporarily unavailable", "service unavailable", "bad gateway",
+                        "internal_problem", "error_try_again", "500", "502", "503", "504",
+                    ))
+                    if transient and attempt < 3:
+                        await asyncio.sleep(2 * attempt)
+                        continue
+                    break
+        raise last_error if last_error else RuntimeError("Rubika message finalization failed")
 
     @staticmethod
     def _validate_send_result(result: Any) -> None:
@@ -202,109 +242,56 @@ class RubikaSender:
                 return
             raise RuntimeError("Rubika response did not contain a verifiable success result")
 
-    async def _send_chunked_document(self, path: Path, caption: str) -> dict[str, Any]:
-        """Upload one bounded-size part at a time, then publish its integrity manifest.
-
-        This avoids materializing a second full-size copy of a large video on disk.
-        Parts remain sequential to preserve deterministic order and avoid flooding
-        the destination with concurrent uploads.
-        """
+    async def _send_zip_chunked_document(self, path: Path, caption: str) -> dict[str, Any]:
+        """Use TG2RUB's >1.5 GiB / 500 MiB ZIP-part strategy without duplicating the full file."""
         if self.client is None:
             raise RuntimeError("Rubika sender has not been started")
-        before = path.stat()
-        total_bytes = before.st_size
-        total_parts = max(1, math.ceil(total_bytes / DEFAULT_CHUNK_SIZE))
-        full_digest = hashlib.sha256()
-        parts: list[dict[str, Any]] = []
-        bytes_read = 0
+        total_parts = max(1, (path.stat().st_size + LARGE_FILE_PART_SIZE - 1) // LARGE_FILE_PART_SIZE)
+        sent_parts = 0
+        manifest_data: dict[str, Any] | None = None
 
-        with tempfile.TemporaryDirectory(prefix="telerubik-chunks-") as temporary:
-            chunk_dir = Path(temporary)
-            with path.open("rb") as source:
-                for index in range(1, total_parts + 1):
-                    part_name = f"{path.name}.part{index:04d}-of-{total_parts:04d}"
-                    part_path = chunk_dir / part_name
-                    part_digest = hashlib.sha256()
-                    part_bytes = 0
-                    remaining = DEFAULT_CHUNK_SIZE
-
-                    with part_path.open("xb") as output:
-                        while remaining:
-                            block = source.read(min(1024 * 1024, remaining))
-                            if not block:
-                                break
-                            output.write(block)
-                            part_digest.update(block)
-                            full_digest.update(block)
-                            part_bytes += len(block)
-                            bytes_read += len(block)
-                            remaining -= len(block)
+        with tempfile.TemporaryDirectory(prefix="telerubik-zip-parts-") as temporary:
+            part_dir = Path(temporary)
+            for item in iter_zip_parts(path, part_dir, LARGE_FILE_PART_SIZE):
+                if "manifest" in item:
+                    manifest_data = item["manifest"]
+                    manifest_path = part_dir / f"{path.name}.manifest.json"
+                    with manifest_path.open("x", encoding="utf-8") as output:
+                        json.dump(manifest_data, output, ensure_ascii=False, indent=2)
+                        output.write("\\n")
                         output.flush()
                         os.fsync(output.fileno())
-
-                    expected_part_size = min(DEFAULT_CHUNK_SIZE, total_bytes - (index - 1) * DEFAULT_CHUNK_SIZE)
-                    if part_bytes != expected_part_size:
-                        raise RuntimeError("Source file changed or ended during chunk preparation")
-
-                    parts.append({
-                        "index": index,
-                        "filename": part_name,
-                        "size_bytes": part_bytes,
-                        "sha256": part_digest.hexdigest(),
-                    })
-                    part_caption = (
-                        (caption.strip() + "\n\n") if index == 1 and caption.strip() else ""
-                    ) + (
-                        f"{path.name} | PART {index:04d}/{total_parts:04d}\n"
-                        f"Bytes: {part_bytes} | SHA-256: {part_digest.hexdigest()}\n"
-                        "Join parts in ascending order; verify with the manifest."
+                    manifest_caption = (
+                        f"ZIP PART MANIFEST: {path.name}\\n"
+                        f"Parts: {total_parts} | Original bytes: {manifest_data['total_bytes']}\\n"
+                        f"Full-file SHA-256: {manifest_data['sha256']}\\n"
+                        "Download every ZIP part and this manifest. Extract each ZIP, "
+                        "then concatenate the numbered .part files in order and verify SHA-256."
                     )
-                    await self._send_single_document(part_path, part_caption)
-                    # Free the part before producing the next one.
-                    part_path.unlink()
+                    await self._send_single_document(manifest_path, manifest_caption)
+                    break
 
-                if source.read(1):
-                    raise RuntimeError("Source file grew during chunk transfer")
+                archive_path = Path(item["archive_path"])
+                index = int(item["index"])
+                part_caption = (
+                    (caption.strip() + "\\n\\n") if index == 1 and caption.strip() else ""
+                ) + (
+                    f"{path.name} | PART {index:03d}/{total_parts:03d} (ZIP)\\n"
+                    f"Original bytes: {item['size_bytes']} | SHA-256: {item['sha256']}\\n"
+                    "Extract this ZIP; join the numbered .part files in order."
+                )
+                await self._send_single_document(archive_path, part_caption)
+                archive_path.unlink(missing_ok=True)
+                sent_parts += 1
 
-            after = path.stat()
-            if (
-                bytes_read != total_bytes
-                or after.st_size != before.st_size
-                or after.st_mtime_ns != before.st_mtime_ns
-                or getattr(after, "st_ino", None) != getattr(before, "st_ino", None)
-            ):
-                raise RuntimeError("Source file changed during chunk transfer")
-
-            manifest = {
-                "format": "telerubik-chunks-v1",
-                "original_filename": path.name,
-                "total_bytes": total_bytes,
-                "chunk_size_bytes": DEFAULT_CHUNK_SIZE,
-                "total_parts": total_parts,
-                "sha256": full_digest.hexdigest(),
-                "parts": parts,
-            }
-            manifest_path = chunk_dir / f"{path.name}.manifest.json"
-            with manifest_path.open("x", encoding="utf-8") as output:
-                json.dump(manifest, output, ensure_ascii=False, indent=2)
-                output.write("\n")
-                output.flush()
-                os.fsync(output.fileno())
-
-            manifest_caption = (
-                f"CHUNK MANIFEST: {path.name}\n"
-                f"Parts: {total_parts} | Total bytes: {total_bytes}\n"
-                f"Full-file SHA-256: {full_digest.hexdigest()}\n"
-                "Download all numbered parts and this JSON manifest, then reassemble "
-                "in order and verify SHA-256."
-            )
-            await self._send_single_document(manifest_path, manifest_caption)
-
+        if manifest_data is None or sent_parts != total_parts:
+            raise RuntimeError("Large-file ZIP transfer did not produce all parts and a manifest")
         return {
             "status": "OK",
             "chunked": True,
-            "parts": total_parts,
-            "sha256": full_digest.hexdigest(),
+            "format": "zip-parts",
+            "parts": sent_parts,
+            "sha256": manifest_data["sha256"],
         }
 
     async def send_document(self, path: Path | None, caption: str) -> Any:
@@ -322,9 +309,10 @@ class RubikaSender:
         path = Path(path)
         if not path.is_file():
             raise RuntimeError("Upload source file does not exist")
-        if path.stat().st_size <= DEFAULT_CHUNK_SIZE:
-            return await self._send_single_document(path, caption)
-        return await self._send_chunked_document(path, caption)
+        if path.stat().st_size > LARGE_FILE_SPLIT_THRESHOLD:
+            return await self._send_zip_chunked_document(path, caption)
+        # Walrus-style upload-then-send keeps ordinary files as one Rubika document.
+        return await self._send_single_document(path, caption)
 
     async def close(self) -> None:
         if self.client is None:
