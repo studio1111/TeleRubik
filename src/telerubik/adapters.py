@@ -133,19 +133,12 @@ class RubikaSender:
             await _resolve(self.client.connect())
             await _enable_verified_rubpy_transport(self.client)
 
-            try:
-                result = await _resolve(self.client.get_me())
-            except Exception as exc:
-                # A valid saved auth can still be missing its device registration
-                # on this runtime. Recover only for Rubpy's explicit NOT_REGISTERED
-                # response; never start an interactive phone/code login in Actions.
-                if type(exc).__name__ != "NotRegistered":
-                    raise
-                register = getattr(self.client, "register_device", None)
-                if not callable(register):
-                    raise RuntimeError("Rubpy cannot register the saved device") from None
-                await _resolve(register())
-                result = await _resolve(self.client.get_me())
+            # A NOT_REGISTERED response from get_me means this stored auth is
+            # not accepted. register_device() is itself an authenticated API
+            # request in Rubpy 7.3.5; upstream Start.start() calls it only after
+            # a successful fresh sign_in. Retrying it with the rejected auth
+            # cannot re-authenticate the account, so fail and require local login.
+            result = await _resolve(self.client.get_me())
 
             actual_guid = getattr(getattr(result, "user", None), "user_guid", None)
             if not actual_guid:
@@ -161,10 +154,19 @@ class RubikaSender:
                     await _resolve(client.disconnect())
                 except Exception:
                     pass
-            raise RuntimeError(
-                f"Rubpy session verification failed ({type(exc).__name__}); "
-                "authenticate the session locally again"
-            ) from None
+            if type(exc).__name__ == "NotRegistered":
+                message = (
+                    "Rubika rejected the saved authorization (NotRegistered). "
+                    "register_device() cannot restore rejected auth; re-authenticate "
+                    "the same account locally in Termux, then update GitHub Actions "
+                    "secret RUBIKA_SESSION_B64 before retrying."
+                )
+            else:
+                message = (
+                    f"Rubpy session verification failed ({type(exc).__name__}); "
+                    "inspect the local Rubika session and re-authenticate if needed"
+                )
+            raise RuntimeError(message) from None
 
     @staticmethod
     def _file_inline(uploaded: Any) -> dict[str, Any]:
