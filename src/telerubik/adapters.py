@@ -118,7 +118,10 @@ class RubikaSender:
 
         self.client = Client(name=self.session_name, platform="Android", logger=logger)
         try:
-            await _resolve(self.client.connect())
+            # Match the established Rubpy Client lifecycle used by Walrus and TG2RUB.
+            # start() restores the account session, initializes the network client,
+            # validates the account and performs registration only when Rubika asks.
+            await _resolve(self.client.start())
             await _enable_verified_rubpy_transport(self.client)
             if not self.client.auth or not self.client.private_key:
                 raise RuntimeError("Rubpy session does not contain authentication material")
@@ -128,18 +131,14 @@ class RubikaSender:
             from Crypto.Signature import pkcs1_15
 
             self.client.decode_auth = Crypto.decode_auth(self.client.auth)
-            # Rubpy's authenticated-session connect() restores auth and private_key,
-            # but does not derive the AES passphrase needed by encrypted API calls.
+            # Rubpy 7.3.5 does not derive this for a restored session.
             self.client.key = Crypto.passphrase(self.client.auth)
             self.client.import_key = pkcs1_15.new(
                 RSA.import_key(self.client.private_key.encode())
             )
-            me = await _resolve(self.client.get_me())
-            guid = getattr(getattr(me, "user", None), "user_guid", None)
-            if not guid:
+            if not getattr(self.client, "guid", None):
                 raise RuntimeError("Rubika did not return the authenticated account GUID")
-            self.client.guid = guid
-            # GitHub-hosted runners are ephemeral; restore of an authenticated\n            # session does not register this runner as a Rubika device.\n            await _register_rubpy_device(self.client)\n        except Exception as exc:
+            # The restored session is validated before any upload. Device registration\n            # is attempted lazily only if Rubika explicitly rejects the upload as NOT_REGISTERED.\n        except Exception as exc:
             client, self.client = self.client, None
             if client is not None:
                 try:
