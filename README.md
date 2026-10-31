@@ -115,7 +115,7 @@ async def main():
 asyncio.run(main())
 PY
 chmod 600 private/rubika_session.rp
-base64 -w 0 private/rubika_session.rp > "$HOME/rubika_session.b64"
+base64 private/rubika_session.rp | tr -d '\n' > "$HOME/rubika_session.b64"
 gh secret set RUBIKA_SESSION_B64 --repo studio1111/TeleRubik < "$HOME/rubika_session.b64"
 ```
 
