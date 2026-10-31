@@ -133,7 +133,20 @@ class RubikaSender:
             await _resolve(self.client.connect())
             await _enable_verified_rubpy_transport(self.client)
 
-            result = await _resolve(self.client.get_me())
+            try:
+                result = await _resolve(self.client.get_me())
+            except Exception as exc:
+                # A valid saved auth can still be missing its device registration
+                # on this runtime. Recover only for Rubpy's explicit NOT_REGISTERED
+                # response; never start an interactive phone/code login in Actions.
+                if type(exc).__name__ != "NotRegistered":
+                    raise
+                register = getattr(self.client, "register_device", None)
+                if not callable(register):
+                    raise RuntimeError("Rubpy cannot register the saved device") from None
+                await _resolve(register())
+                result = await _resolve(self.client.get_me())
+
             actual_guid = getattr(getattr(result, "user", None), "user_guid", None)
             if not actual_guid:
                 raise RuntimeError("Rubika did not return the authenticated account GUID")
