@@ -265,8 +265,8 @@ class RubikaSender:
                         f"ZIP PART MANIFEST: {path.name}\\n"
                         f"Parts: {total_parts} | Original bytes: {manifest_data['total_bytes']}\\n"
                         f"Full-file SHA-256: {manifest_data['sha256']}\\n"
-                        "Download every ZIP part and this manifest. Extract each ZIP, "
-                        "then concatenate the numbered .part files in order and verify SHA-256."
+                        "Download every ZIP part and this manifest into one directory. "
+                        "Run the built-in reassembly helper; it reads the ZIP members in order and verifies SHA-256."
                     )
                     await self._send_single_document(manifest_path, manifest_caption)
                     break
