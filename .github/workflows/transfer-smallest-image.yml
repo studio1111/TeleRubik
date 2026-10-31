@@ -26,12 +26,9 @@ jobs:
       TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
       TELEGRAM_SESSION_STRING: ${{ secrets.TELEGRAM_SESSION_STRING }}
       RUBIKA_SESSION_B64: ${{ secrets.RUBIKA_SESSION_B64 }}
-      RUBIKA_SESSION_NAME: ${{ runner.temp }}/telerubik-private/rubika_session
       RUBIKA_DESTINATION_GUID: ${{ secrets.RUBIKA_DESTINATION_GUID }}
       TELERUBIK_MAX_FILE_SIZE_MB: "2048"
       TELERUBIK_DRY_RUN: "false"
-      TELERUBIK_DOWNLOAD_DIR: ${{ runner.temp }}/telerubik-downloads
-      TELERUBIK_STATE_DB: ${{ runner.temp }}/telerubik-data/remote-transfer.sqlite3
     steps:
       - name: Require all credentials without printing values
         shell: bash
@@ -55,6 +52,8 @@ jobs:
 
       - name: Provision authenticated Rubpy session
         shell: bash
+        env:
+          RUBIKA_SESSION_NAME: ${{ runner.temp }}/telerubik-private/rubika_session
         run: |
           set -euo pipefail
           install -d -m 700 "$RUNNER_TEMP/telerubik-private"
@@ -67,6 +66,9 @@ jobs:
         run: python -m pip install --upgrade pip && python -m pip install -e .
 
       - name: Transfer only the inventoried 17.4 KiB JPEG
+        env:
+          TELERUBIK_DOWNLOAD_DIR: ${{ runner.temp }}/telerubik-downloads
+          TELERUBIK_STATE_DB: ${{ runner.temp }}/telerubik-data/remote-transfer.sqlite3
         run: >-
           telerubik transfer-one
           --source-chat @Animehighbo
