@@ -1,6 +1,7 @@
 # TeleRubik repository instructions
 
 - Inspect related code and tests before changing behavior; keep changes small and testable.
+- Apply Ponytail-style engineering principles: inspect related code first, make the smallest correct change, reuse existing functionality, avoid unnecessary dependencies and complexity, and never weaken security, validation, error handling, accessibility, data integrity, or meaningful tests.
 - Never commit secrets, Telegram session files, Rubika sessions, real tokens, or private chat exports. Use .env.example placeholders only.
 - Treat message metadata, filenames, captions, and remote responses as untrusted input.
 - Keep external clients behind adapter boundaries and core logic testable without network access.

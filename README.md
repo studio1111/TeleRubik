@@ -76,3 +76,48 @@ python -m compileall -q src tests
 GitHub Actions can test code but cannot authenticate to your Telegram or Rubika accounts or prove a real transfer. A live test requires authorized session material and a private destination, which must never be posted in an issue or chat.
 
 See [design notes](docs/design.md), [implementation checklist](docs/implementation-plan.md), and [security policy](SECURITY.md).
+
+## Rubika session recovery
+
+The remote worker never performs an interactive Rubika login. If it reports
+`NotRegistered` while verifying the saved session, the stored authorization
+must be refreshed locally. In Rubpy 7.3.5, `register_device()` is an authenticated
+API request; upstream calls it after a successful `sign_in()`. Calling it with
+the same rejected authorization cannot replace that authorization.
+
+On the Termux device that owns the session, authenticate through Rubpy's normal
+`start()` flow (it prompts for the phone number and one-time code only when
+the saved authorization is rejected), then update the GitHub Actions secret
+without printing the session contents:
+
+```bash
+cd ~/TeleRubik
+python - <<'PY'
+import asyncio
+from rubpy import Client
+from telerubik.adapters import _enable_verified_rubpy_transport, _resolve
+
+async def main():
+    client = Client(name="./private/rubika_session", platform="Android")
+    try:
+        await _resolve(client.connect())
+        await _enable_verified_rubpy_transport(client)
+        await _resolve(client.start())
+        me = await _resolve(client.get_me())
+        info = client.session.information()
+        guid = getattr(getattr(me, "user", None), "user_guid", None)
+        if not guid or not info or len(info) != 5 or info[2] != guid:
+            raise RuntimeError("Rubika session verification failed; secret was not updated")
+        print("Rubika account authentication verified.")
+    finally:
+        await _resolve(client.disconnect())
+
+asyncio.run(main())
+PY
+chmod 600 private/rubika_session.rp
+base64 private/rubika_session.rp | tr -d '\n' > "$HOME/rubika_session.b64"
+gh secret set RUBIKA_SESSION_B64 --repo studio1111/TeleRubik < "$HOME/rubika_session.b64"
+```
+
+Do not paste the session file, Base64 value, phone code, or private key into chat
+or workflow logs. Only dispatch the live transfer after the secret update succeeds.
