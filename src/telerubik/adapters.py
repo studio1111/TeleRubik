@@ -146,7 +146,6 @@ class RubikaSender:
             if actual_guid != saved_guid:
                 raise RuntimeError("Rubika account GUID does not match the saved session")
             self.client.guid = actual_guid
-            # Device registration is attempted lazily only after an explicit NOT_REGISTERED response.
         except Exception as exc:
             client, self.client = self.client, None
             if client is not None:
