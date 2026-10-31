@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
@@ -176,17 +177,64 @@ class RubikaSender:
         send_method = getattr(self.client, "send_message", None)
         if upload_method is None or send_method is None:
             raise RuntimeError("Installed Rubpy Client lacks upload/send_message; refusing unsafe fallback")
-        uploaded = await _resolve(upload_method(str(path), file_name=path.name))
-        file_inline = self._file_inline(uploaded)
-        result = await _resolve(
-            send_method(
-                object_guid=self.destination_guid,
-                text=caption.strip() or None,
-                file_inline=file_inline,
-            )
+        try:
+            uploaded = await _resolve(upload_method(str(path), file_name=path.name))
+        except Exception as exc:
+            # Match Rubpy's own sign-in recovery path, but do not register a new
+            # device on every run. Only do it when requestSendFile explicitly says
+            # NOT_REGISTERED, then retry that upload exactly once.
+            if type(exc).__name__ != "NotRegistered":
+                raise
+            register = getattr(self.client, "register_device", None)
+            if not callable(register):
+                raise RuntimeError("Rubika rejected the upload as NOT_REGISTERED and this Rubpy client cannot register") from None
+            await _resolve(register())
+            uploaded = await _resolve(upload_method(str(path), file_name=path.name))
+
+        base_inline = self._file_inline(uploaded)
+        suffix = path.suffix.lower()
+        preferred_type = (
+            "Video" if suffix in {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".flv"}
+            else "Image" if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
+            else "Music" if suffix in {".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac"}
+            else "File"
         )
-        self._validate_send_result(result)
-        return result
+        variants = [preferred_type] + (["File"] if preferred_type != "File" else [])
+        last_error: Exception | None = None
+        for inline_type in variants:
+            file_inline = dict(base_inline)
+            file_inline.update({
+                "type": inline_type,
+                "time": 1,
+                "width": 200,
+                "height": 200,
+                "music_performer": "",
+                "is_spoil": False,
+            })
+            for attempt in range(1, 4):
+                try:
+                    result = await _resolve(
+                        send_method(
+                            object_guid=self.destination_guid,
+                            text=caption.strip() or None,
+                            file_inline=file_inline,
+                        )
+                    )
+                    self._validate_send_result(result)
+                    return result
+                except Exception as exc:
+                    last_error = exc
+                    error_text = f"{type(exc).__name__} {exc}".lower()
+                    transient = any(token in error_text for token in (
+                        "timeout", "timed out", "connection reset", "connection aborted",
+                        "temporarily unavailable", "service unavailable", "bad gateway",
+                        "internal_problem", "error_try_again", "500", "502", "503", "504",
+                    ))
+                    if transient and attempt < 3:
+                        await asyncio.sleep(2 * attempt)
+                        continue
+                    break
+        raise last_error if last_error else RuntimeError("Rubika message finalization failed")
 
     @staticmethod
     def _validate_send_result(result: Any) -> None:
