@@ -19,6 +19,20 @@ async def _resolve(value: Any) -> Any:
     return await value if inspect.isawaitable(value) else value
 
 
+async def _register_rubpy_device(client: Any) -> None:
+    """Register this ephemeral worker device before file-upload API calls.
+
+    Rubpy's normal start() flow registers a device only during interactive
+    sign-in. A restored session can pass get_me() while requestSendFile still
+    rejects an unregistered runner device, so hosted workers must register it
+    explicitly on each fresh runner.
+    """
+    register = getattr(client, "register_device", None)
+    if not callable(register):
+        raise RuntimeError("Installed Rubpy Client does not support register_device")
+    await _resolve(register())
+
+
 async def _enable_verified_rubpy_transport(client: Any) -> None:
     """Replace Rubpy 7.3.5's TLS-verification-disabled session before API use."""
     import aiohttp
@@ -125,7 +139,7 @@ class RubikaSender:
             if not guid:
                 raise RuntimeError("Rubika did not return the authenticated account GUID")
             self.client.guid = guid
-        except Exception as exc:
+            # GitHub-hosted runners are ephemeral; restore of an authenticated\n            # session does not register this runner as a Rubika device.\n            await _register_rubpy_device(self.client)\n        except Exception as exc:
             client, self.client = self.client, None
             if client is not None:
                 try:
