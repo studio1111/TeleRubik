@@ -220,8 +220,16 @@ class SingleTransferTests(unittest.TestCase):
                         sender.start = AsyncMock()
                         sender.send_document = AsyncMock()
                         sender.close = AsyncMock()
+                        settings = Settings(**{
+                            **settings_for(directory).__dict__,
+                            "max_file_size_bytes": 20000,
+                        })
+                        async def verify_file_during_send(path, _caption):
+                            self.assertTrue(Path(path).is_file())
+                            self.assertEqual(Path(path).stat().st_size, 17843)
+                        sender.send_document.side_effect = verify_file_during_send
                         await transfer_one(
-                            settings_for(directory),
+                            settings,
                             "@Animehighbo",
                             1518,
                             None,
