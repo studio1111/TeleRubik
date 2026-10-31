@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import tempfile
 import unittest
+import sys
+import types
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -14,6 +17,76 @@ class NotRegistered(Exception):
 
 
 class AdapterUploadTests(unittest.TestCase):
+    def test_start_restores_rubpy_sqlite_fields_without_interactive_login(self):
+        async def scenario():
+            client_instances = []
+
+            class FakeClient:
+                def __init__(self, **kwargs):
+                    self.session = SimpleNamespace(
+                        information=lambda: (
+                            "+989000000000", "auth-value", "saved-guid",
+                            "stored-agent", "private-key"
+                        )
+                    )
+                    self.auth = None
+                    self.private_key = None
+                    self.guid = None
+                    self.start = AsyncMock(side_effect=AssertionError("interactive start must not run"))
+                    self.get_me = AsyncMock(
+                        return_value=SimpleNamespace(
+                            user=SimpleNamespace(user_guid="saved-guid")
+                        )
+                    )
+                    self.connect = AsyncMock()
+                    self.disconnect = AsyncMock()
+                    client_instances.append(self)
+
+            rubpy_module = types.ModuleType("rubpy")
+            rubpy_module.Client = FakeClient
+            rubpy_crypto_module = types.ModuleType("rubpy.crypto")
+            rubpy_crypto_module.Crypto = SimpleNamespace(
+                passphrase=lambda value: f"key:{value}",
+                decode_auth=lambda value: f"decoded:{value}",
+            )
+            crypto_module = types.ModuleType("Crypto")
+            public_key_module = types.ModuleType("Crypto.PublicKey")
+            public_key_module.RSA = SimpleNamespace(import_key=lambda value: f"rsa:{value}")
+            signature_module = types.ModuleType("Crypto.Signature")
+            signature_module.pkcs1_15 = SimpleNamespace(new=lambda value: f"signer:{value}")
+
+            modules = {
+                "rubpy": rubpy_module,
+                "rubpy.crypto": rubpy_crypto_module,
+                "Crypto": crypto_module,
+                "Crypto.PublicKey": public_key_module,
+                "Crypto.Signature": signature_module,
+            }
+            sender = RubikaSender("session", "destination")
+            with patch.dict(sys.modules, modules), patch(
+                "telerubik.adapters._validate_authenticated_session"
+            ), patch(
+                "telerubik.adapters._enable_verified_rubpy_transport",
+                new=AsyncMock(),
+            ):
+                await sender.start()
+
+            client = client_instances[0]
+            self.assertEqual(client.auth, "auth-value")
+            self.assertEqual(client.private_key, "private-key")
+            self.assertEqual(client.guid, "saved-guid")
+            self.assertEqual(client.phone_number, "+989000000000")
+            self.assertEqual(client.user_agent, "stored-agent")
+            self.assertEqual(client.key, "key:auth-value")
+            self.assertEqual(client.decode_auth, "decoded:auth-value")
+            self.assertEqual(client.import_key, "signer:rsa:private-key")
+            client.connect.assert_awaited_once_with()
+            client.get_me.assert_awaited_once_with()
+            client.start.assert_not_awaited()
+            await sender.close()
+
+        asyncio.run(scenario())
+
     def test_not_registered_upload_triggers_one_device_registration_then_retries(self):
         async def scenario():
             with tempfile.TemporaryDirectory() as temporary:
