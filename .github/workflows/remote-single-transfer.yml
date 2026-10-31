@@ -27,12 +27,9 @@ jobs:
       TELEGRAM_SESSION_STRING: ${{ secrets.TELEGRAM_SESSION_STRING }}
       TELEGRAM_SOURCE_CHATS: "@Animehighbo"
       RUBIKA_SESSION_B64: ${{ secrets.RUBIKA_SESSION_B64 }}
-      RUBIKA_SESSION_NAME: ${{ runner.temp }}/telerubik-private/rubika_session
       RUBIKA_DESTINATION_GUID: ${{ secrets.RUBIKA_DESTINATION_GUID }}
       TELERUBIK_MAX_FILE_SIZE_MB: "2048"
       TELERUBIK_DRY_RUN: "false"
-      TELERUBIK_DOWNLOAD_DIR: "${{ runner.temp }}/telerubik-downloads"
-      TELERUBIK_STATE_DB: "${{ runner.temp }}/telerubik-data/remote-transfer.sqlite3"
     steps:
       - name: Require explicit live-send authorization
         if: ${{ inputs.allow_live_send != true }}
@@ -51,6 +48,20 @@ jobs:
             fi
           done
           echo "Required remote credentials are present."
+
+      - name: Configure runner temporary paths
+        shell: bash
+        env:
+          RUBIKA_SESSION_NAME: ${{ runner.temp }}/telerubik-private/rubika_session
+          TELERUBIK_DOWNLOAD_DIR: ${{ runner.temp }}/telerubik-downloads
+          TELERUBIK_STATE_DB: ${{ runner.temp }}/telerubik-data/remote-transfer.sqlite3
+        run: |
+          set -euo pipefail
+          {
+            printf 'RUBIKA_SESSION_NAME=%s\n' "$RUBIKA_SESSION_NAME"
+            printf 'TELERUBIK_DOWNLOAD_DIR=%s\n' "$TELERUBIK_DOWNLOAD_DIR"
+            printf 'TELERUBIK_STATE_DB=%s\n' "$TELERUBIK_STATE_DB"
+          } >> "$GITHUB_ENV"
 
       - uses: actions/checkout@v4
         with:
