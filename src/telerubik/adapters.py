@@ -103,27 +103,22 @@ class RubikaSender:
 
         self.client = Client(name=self.session_name, platform="Android", logger=logger)
         try:
-            # Match the established Rubpy Client lifecycle used by Walrus and TG2RUB.
-            # start() restores the account session, initializes the network client,
-            # validates the account and performs registration only when Rubika asks.
-            await _resolve(self.client.start())
+            # Use the established Rubpy start() lifecycle from Walrus and TG2RUB,
+            # but establish certificate-verified transport before its first API call.
+            await _resolve(self.client.connect())
             await _enable_verified_rubpy_transport(self.client)
             if not self.client.auth or not self.client.private_key:
                 raise RuntimeError("Rubpy session does not contain authentication material")
 
             from rubpy.crypto import Crypto
-            from Crypto.PublicKey import RSA
-            from Crypto.Signature import pkcs1_15
-
-            self.client.decode_auth = Crypto.decode_auth(self.client.auth)
-            # Rubpy 7.3.5 does not derive this for a restored session.
             self.client.key = Crypto.passphrase(self.client.auth)
-            self.client.import_key = pkcs1_15.new(
-                RSA.import_key(self.client.private_key.encode())
-            )
+            # start() validates the restored account on this already-connected
+            # client and fills decode_auth, import_key and guid.
+            await _resolve(self.client.start())
             if not getattr(self.client, "guid", None):
                 raise RuntimeError("Rubika did not return the authenticated account GUID")
-            # The restored session is validated before any upload. Device registration\n            # is attempted lazily only if Rubika explicitly rejects the upload as NOT_REGISTERED.\n        except Exception as exc:
+            # Device registration is attempted lazily only after an explicit NOT_REGISTERED response.
+        except Exception as exc:
             client, self.client = self.client, None
             if client is not None:
                 try:
