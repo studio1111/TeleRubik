@@ -79,7 +79,7 @@ class AdapterUploadTests(unittest.TestCase):
             self.assertEqual(client.user_agent, "stored-agent")
             self.assertEqual(client.key, "key:auth-value")
             self.assertEqual(client.decode_auth, "decoded:auth-value")
-            self.assertEqual(client.import_key, "signer:rsa:private-key")
+            self.assertEqual(client.import_key, "signer:rsa:b'private-key'")
             client.connect.assert_awaited_once_with()
             client.get_me.assert_awaited_once_with()
             client.start.assert_not_awaited()
