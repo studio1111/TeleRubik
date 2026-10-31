@@ -103,20 +103,43 @@ class RubikaSender:
 
         self.client = Client(name=self.session_name, platform="Android", logger=logger)
         try:
-            # Use the established Rubpy start() lifecycle from Walrus and TG2RUB,
-            # but establish certificate-verified transport before its first API call.
+            # Rubpy 7.3.5's Client constructor creates SQLiteSession but does NOT
+            # hydrate Client.auth/private_key from it. Restore the five fields
+            # explicitly using the public SQLiteSession.information() API.
+            session_info = self.client.session.information()
+            if not isinstance(session_info, (tuple, list)) or len(session_info) != 5:
+                raise RuntimeError("Rubpy SQLite session does not contain one complete account record")
+            phone, auth, saved_guid, user_agent, private_key = session_info
+            if not all(isinstance(value, str) and value for value in session_info):
+                raise RuntimeError("Rubpy SQLite session contains incomplete authentication fields")
+
+            self.client.phone_number = phone
+            self.client.auth = auth
+            self.client.guid = saved_guid
+            self.client.user_agent = user_agent
+            self.client.private_key = private_key
+
+            from Crypto.PublicKey import RSA
+            from Crypto.Signature import pkcs1_15
+            from rubpy.crypto import Crypto
+
+            self.client.key = Crypto.passphrase(auth)
+            self.client.decode_auth = Crypto.decode_auth(auth)
+            self.client.import_key = pkcs1_15.new(RSA.import_key(private_key.encode()))
+
+            # Connect first, then enforce certificate verification before the
+            # first authenticated API request. Do not call Client.start(): in
+            # Rubpy 7.3.5 it falls back to interactive sign-in on NotRegistered.
             await _resolve(self.client.connect())
             await _enable_verified_rubpy_transport(self.client)
-            if not self.client.auth or not self.client.private_key:
-                raise RuntimeError("Rubpy session does not contain authentication material")
 
-            from rubpy.crypto import Crypto
-            self.client.key = Crypto.passphrase(self.client.auth)
-            # start() validates the restored account on this already-connected
-            # client and fills decode_auth, import_key and guid.
-            await _resolve(self.client.start())
-            if not getattr(self.client, "guid", None):
+            result = await _resolve(self.client.get_me())
+            actual_guid = getattr(getattr(result, "user", None), "user_guid", None)
+            if not actual_guid:
                 raise RuntimeError("Rubika did not return the authenticated account GUID")
+            if actual_guid != saved_guid:
+                raise RuntimeError("Rubika account GUID does not match the saved session")
+            self.client.guid = actual_guid
             # Device registration is attempted lazily only after an explicit NOT_REGISTERED response.
         except Exception as exc:
             client, self.client = self.client, None
