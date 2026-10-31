@@ -49,11 +49,19 @@ def fake_rubpy_modules(client):
 
 def make_fake_client():
     client = Mock()
-    client.auth = "fake-auth"
-    client.private_key = "fake-private-key"
+    client.auth = None
+    client.private_key = None
     client.connect = AsyncMock()
     client.start = AsyncMock()
-    client.guid = "authenticated-user-guid"
+    client.guid = None
+    client.phone_number = None
+    client.user_agent = None
+    client.session = types.SimpleNamespace(
+        information=lambda: (
+            "phone", "fake-auth", "authenticated-user-guid",
+            "test-agent", "fake-private-key"
+        )
+    )
     client.original_session = types.SimpleNamespace(close=AsyncMock())
     client.connection = types.SimpleNamespace(
         session=client.original_session,
@@ -132,9 +140,13 @@ class RubikaSenderTests(unittest.TestCase):
 
             async def verify_key_before_api_call():
                 self.assertEqual(fake_client.key, "derived-session-key")
-                fake_client.guid = "authenticated-user-guid"
+                self.assertEqual(fake_client.decode_auth, "decoded-auth")
+                self.assertEqual(fake_client.import_key, "signing-key")
 
-            fake_client.start.side_effect = verify_key_before_api_call
+            fake_client.get_me.side_effect = verify_key_before_api_call
+            fake_client.get_me.return_value = types.SimpleNamespace(
+                user=types.SimpleNamespace(user_guid="authenticated-user-guid")
+            )
             fake_client.upload = AsyncMock(return_value={"file_id": "abc", "access_hash": "xyz"})
             fake_client.send_message = AsyncMock(return_value={"status": "OK", "status_det": "OK"})
             rubpy_modules = fake_rubpy_modules(fake_client)
@@ -160,10 +172,13 @@ class RubikaSenderTests(unittest.TestCase):
                             headers={"user-agent": "test-agent"},
                             timeout="verified-timeout",
                         )
-                        fake_client.start.assert_awaited_once()
-                        fake_client.get_me.assert_not_awaited()
+                        fake_client.start.assert_not_awaited()
+                        fake_client.get_me.assert_awaited_once()
                         self.assertEqual(fake_client.guid, "authenticated-user-guid")
+                        self.assertEqual(fake_client.phone_number, "phone")
+                        self.assertEqual(fake_client.user_agent, "test-agent")
                         rubpy_modules["rubpy.crypto"].Crypto.passphrase.assert_called_once_with("fake-auth")
+                        rubpy_modules["rubpy.crypto"].Crypto.decode_auth.assert_called_once_with("fake-auth")
                         fake_client.upload.assert_awaited_once_with(str(path), file_name="episode.mkv")
                         fake_client.send_message.assert_awaited_once_with(
                             object_guid="destination-guid",
