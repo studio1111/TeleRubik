@@ -20,9 +20,11 @@ class AdapterUploadTests(unittest.TestCase):
     def test_start_restores_rubpy_sqlite_fields_without_interactive_login(self):
         async def scenario():
             client_instances = []
+            client_options = []
 
             class FakeClient:
                 def __init__(self, **kwargs):
+                    client_options.append(kwargs)
                     self.session = SimpleNamespace(
                         information=lambda: (
                             "+989000000000", "auth-value", "saved-guid",
@@ -72,6 +74,7 @@ class AdapterUploadTests(unittest.TestCase):
                 await sender.start()
 
             client = client_instances[0]
+            self.assertEqual(client_options[0].get("platform"), "PWA")
             self.assertEqual(client.auth, "auth-value")
             self.assertEqual(client.private_key, "private-key")
             self.assertEqual(client.guid, "saved-guid")
