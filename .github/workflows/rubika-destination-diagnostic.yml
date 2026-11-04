@@ -1,0 +1,137 @@
+name: Rubika destination diagnostic
+
+on:
+  workflow_dispatch:
+    inputs:
+      allow_live_send:
+        description: "Authorize one diagnostic text and one generated JPEG to the configured Rubika destination"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: telerubik-rubika-destination-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    name: Verify destination, text send, and native image send
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RUBIKA_SESSION_B64: ${{ secrets.RUBIKA_SESSION_B64 }}
+      RUBIKA_DESTINATION_GUID: ${{ secrets.RUBIKA_DESTINATION_GUID }}
+      TELERUBIK_DRY_RUN: "false"
+      DIAGNOSTIC_RUN_ID: ${{ github.run_id }}
+    steps:
+      - name: Require explicit live-send authorization
+        if: ${{ inputs.allow_live_send != true }}
+        run: |
+          echo "::error::Live send was not authorized. Re-run with allow_live_send=true."
+          exit 1
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Provision private Rubpy session
+        shell: bash
+        run: |
+          set -euo pipefail
+          for key in RUBIKA_SESSION_B64 RUBIKA_DESTINATION_GUID; do
+            if [[ -z "${!key:-}" ]]; then
+              echo "::error::Missing required repository Actions secret: $key"
+              exit 1
+            fi
+          done
+          export RUBIKA_SESSION_NAME="$RUNNER_TEMP/telerubik-private/rubika_session"
+          install -d -m 700 "$RUNNER_TEMP/telerubik-private"
+          printf '%s' "$RUBIKA_SESSION_B64" | base64 --decode > "$RUBIKA_SESSION_NAME.rp"
+          chmod 600 "$RUBIKA_SESSION_NAME.rp"
+          unset RUBIKA_SESSION_B64
+          echo "RUBIKA_SESSION_NAME=$RUBIKA_SESSION_NAME" >> "$GITHUB_ENV"
+          echo "Rubpy session provisioned in runner temporary storage."
+
+      - name: Install TeleRubik
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Inspect destination and isolate text versus image sending
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import asyncio
+          import os
+          import tempfile
+          from pathlib import Path
+
+          from PIL import Image
+          from telerubik.adapters import RubikaSender, _resolve
+
+          def safe_fields(value):
+              raw = getattr(value, "original_update", None)
+              if not isinstance(raw, dict):
+                  raw = value if isinstance(value, dict) else {}
+              allowed = ("channel_guid", "object_guid", "channel_name", "title", "username", "type", "is_admin", "is_creator")
+              result = {}
+              for key in allowed:
+                  item = raw.get(key)
+                  if isinstance(item, (str, int, bool)):
+                      result[key] = item
+              return result
+
+          async def main():
+              destination = os.environ["RUBIKA_DESTINATION_GUID"]
+              sender = RubikaSender(os.environ["RUBIKA_SESSION_NAME"], destination)
+              try:
+                  await sender.start()
+                  print("AUTHENTICATION=OK")
+
+                  channel_info = await _resolve(sender.client.get_channel_info(destination))
+                  fields = safe_fields(channel_info)
+                  print(f"DESTINATION_LOOKUP=OK fields={fields}")
+
+                  marker = f"TeleRubik diagnostic #{os.environ['DIAGNOSTIC_RUN_ID']} — text transport check"
+                  text_result = await sender.send_document(None, marker)
+                  text_id = getattr(text_result, "message_id", None)
+                  print(f"TEXT_SEND=OK message_id_present={bool(text_id)}")
+
+                  with tempfile.TemporaryDirectory(prefix="telerubik-diagnostic-") as temporary:
+                      image_path = Path(temporary) / "telerubik-diagnostic.jpg"
+                      Image.new("RGB", (96, 64), (245, 245, 245)).save(image_path, format="JPEG", quality=85)
+                      image_result = await sender.send_document(
+                          image_path,
+                          f"TeleRubik diagnostic #{os.environ['DIAGNOSTIC_RUN_ID']} — generated JPEG transport check",
+                      )
+                      image_id = getattr(image_result, "message_id", None)
+                      print(f"IMAGE_SEND=OK message_id_present={bool(image_id)}")
+              except Exception as exc:
+                  detail = getattr(exc, "response", None)
+                  status_det = None
+                  if isinstance(detail, dict):
+                      status_det = detail.get("status_det")
+                  print(f"DIAGNOSTIC_FAILED stage=see_last_completed_marker exception={type(exc).__name__} status_det={status_det}")
+                  raise
+              finally:
+                  await sender.close()
+
+          asyncio.run(main())
+          PY
+
+      - name: Remove private session and diagnostic files
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$RUNNER_TEMP/telerubik-private"
+          echo "Temporary session and diagnostic files removed."
