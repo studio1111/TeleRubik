@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import sys
 import tempfile
 import types
@@ -8,6 +9,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import ANY, AsyncMock, Mock, patch
 
+from PIL import Image
+from rubpy.methods.utilities.thumbnail import MediaThumbnail
 from rubpy.types import Update as RubpyUpdate
 
 from telerubik.adapters import RubikaSender, _validate_authenticated_session
@@ -75,6 +78,20 @@ def make_fake_client():
     )
     client.disconnect = AsyncMock()
     return client
+
+
+
+class RubpyImageThumbnailDependencyTests(unittest.TestCase):
+    def test_pillow_generates_required_image_thumbnail_metadata(self):
+        source = io.BytesIO()
+        Image.new("RGB", (64, 32), color="white").save(source, format="JPEG")
+
+        thumbnail = MediaThumbnail.from_image(source.getvalue())
+
+        self.assertIsNotNone(thumbnail)
+        self.assertEqual(thumbnail.width, 64)
+        self.assertEqual(thumbnail.height, 32)
+        self.assertTrue(thumbnail.image)
 
 
 class RubikaSessionValidationTests(unittest.TestCase):

@@ -1,6 +1,6 @@
 # TeleRubik 🚚
 
-**TeleRubik** transfers text-only posts and posts with media from Telegram chats you are authorized to read to a Rubika destination you control. It is independently implemented and borrows the upload pattern observed in Walrus: use a Rubpy **user-account Client**, upload the complete file with `client.upload`, then send the returned metadata with `client.send_message(file_inline=...)`. It does not use the Rubpy BotClient path for media uploads.
+**TeleRubik** transfers text-only posts and posts with media from Telegram chats you are authorized to read to a Rubika destination you control. Media uploads use the Rubpy 7.3.5 **user-account Client** native `send_message(file_inline=local_path, ...)` flow, which performs upload and message finalization. It does not use the Rubpy BotClient path for media uploads.
 
 > **Status:** the pinned `rubpy==7.3.5` source contract has been inspected and the adapter now handles its session-key, upload-streaming and response-object behavior. The adapter also replaces Rubpy's TLS-verification-disabled HTTP session with certificate-verified TLS before authenticated requests. The latest CI matrix passed on Python 3.11, 3.12 and 3.13, and CodeQL plus dependency audit passed. A live authenticated runtime test and end-to-end transfer to a private destination are still pending.
 
@@ -12,7 +12,7 @@
 - Monotonic per-source Telegram cursors: a bounded initial import is followed by complete incremental scans after restarts or downtime.
 - SHA-256-verified download cache: failed live uploads retain valid downloads for retry/restart, while successful sends and dry-runs clean them up.
 - Filename normalization, file-size limits, download-path boundary checks and dry-run by default.
-- Rubpy user-session upload flow: upload file, then send the uploaded file metadata and original caption.
+- Rubpy user-session native file-send flow, with Pillow-backed image thumbnail generation for Rubika's required image metadata.
 - Unit tests and GitHub Actions security/CI workflows.
 - Local-first state; no paid cloud service is required.
 
@@ -21,7 +21,7 @@
 - Python 3.11+
 - Telegram API ID/hash from https://my.telegram.org and permission to read configured chats.
 - A pre-authenticated Rubpy **user-account session** and a destination GUID you control.
-- `rubpy==7.3.5` (pinned in project dependencies).
+- `rubpy==7.3.5` and `Pillow==13.0.0` (pinned in project dependencies; Pillow is required by Rubpy 7.3.5 to generate image thumbnail/dimension metadata).
 
 ## Configuration
 
@@ -59,7 +59,7 @@ The worker rejects files larger than `TELERUBIK_MAX_FILE_SIZE_MB` before downloa
 
 The Rubika sender combines two inspected reference implementations:
 
-- **Walrus-style normal upload:** one Rubika document is uploaded with `client.upload(...)`, then finalized with `client.send_message(file_inline=...)`. File metadata is normalized, media type is selected from the extension, transient finalization errors are retried, and a generic `File` finalization variant is available.
+- **Rubpy native normal upload:** `client.send_message(file_inline=<local path>, type=..., file_name=...)` reads, uploads and finalizes the file in one library call. For images, Rubpy requires thumbnail bytes and dimensions; Pillow is installed explicitly because Rubpy treats it as an optional extra and otherwise silently omits that metadata, which Rubika rejects with `INVALID_INPUT`. Transient finalization errors are retried.
 - **TG2RUB-style large-file handling:** files larger than 1.5 GiB are streamed into sequential ZIP archives of at most 500 MiB each, using `ZIP_STORED` to avoid CPU-heavy recompression. Each archive is uploaded and deleted before the next archive is generated, keeping temporary disk use bounded. A JSON manifest records the original filename, part order, sizes and SHA-256 hashes.
 
 ZIP parts are separate Rubika messages; **Rubika does not merge them into one video automatically**. To reconstruct the original file, download all ZIP parts and the manifest into one directory, then run `telerubik.chunks.reassemble(manifest_path, parts_dir, output_path)`. The helper reads each ZIP member in order, validates every part and the full-file SHA-256, and only then publishes the reconstructed file. No manual extraction is required. This is a local reassembly step, not a server-side Rubika feature.
