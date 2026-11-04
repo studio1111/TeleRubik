@@ -101,7 +101,10 @@ class RubikaSender:
         logger.setLevel(logging.WARNING)
         logger.propagate = False
 
-        self.client = Client(name=self.session_name, platform="Android", logger=logger)
+        # Match the PWA profile used to create the saved session and by the inspected
+        # Walrus/TG2RUB reference clients. Android changes Rubika headers and app
+        # identity; mixing profiles can leave file-upload endpoints unregistered.
+        self.client = Client(name=self.session_name, platform="PWA", logger=logger)
         try:
             # Rubpy 7.3.5's Client constructor creates SQLiteSession but does NOT
             # hydrate Client.auth/private_key from it. Restore the five fields
