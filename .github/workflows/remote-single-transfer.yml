@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       allow_live_send:
-        description: "Authorize the one-time live send of Telegram message 1734 to the configured private Rubika destination"
+        description: "Authorize the one-time live send of Telegram video message 1900 (Dark Machine - The Animation EP 04, 1080p, about 170.5 MB) to the configured private Rubika destination"
         required: true
         type: boolean
         default: false
@@ -18,9 +18,9 @@ concurrency:
 
 jobs:
   transfer:
-    name: Transfer approved Telegram message 1734
+    name: Transfer replacement Telegram video message 1900
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 45
     env:
       TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
       TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
@@ -28,7 +28,7 @@ jobs:
       TELEGRAM_SOURCE_CHATS: "@Animehighbo"
       RUBIKA_SESSION_B64: ${{ secrets.RUBIKA_SESSION_B64 }}
       RUBIKA_DESTINATION_GUID: ${{ secrets.RUBIKA_DESTINATION_GUID }}
-      TELERUBIK_MAX_FILE_SIZE_MB: "2048"
+      TELERUBIK_MAX_FILE_SIZE_MB: "512"
       TELERUBIK_DRY_RUN: "false"
     steps:
       - name: Require explicit live-send authorization
@@ -101,12 +101,12 @@ jobs:
               raise SystemExit("At least 3 GiB free disk is required for the approved media and reserve.")
           PY
 
-      - name: Transfer only Telegram message 1734
+      - name: Transfer only replacement Telegram video message 1900
         run: >-
           telerubik transfer-one
           --source-chat @Animehighbo
-          --message-id 1734
-          --expected-filename "Spider-Man.Brand.New.Day.2026.720p.WEB-DL.ValaMovie.mkv"
+          --message-id 1900
+          --expected-filename "Dark Machine - The Animation EP 04 1080p @Animehighbo.mkv"
 
       - name: Remove temporary media, session and state
         if: always()
