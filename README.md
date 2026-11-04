@@ -12,7 +12,7 @@
 - Monotonic per-source Telegram cursors: a bounded initial import is followed by complete incremental scans after restarts or downtime.
 - SHA-256-verified download cache: failed live uploads retain valid downloads for retry/restart, while successful sends and dry-runs clean them up.
 - Filename normalization, file-size limits, download-path boundary checks and dry-run by default.
-- Rubpy user-session native file-send flow, with Pillow-backed image thumbnail generation for Rubika's required image metadata.
+- Rubpy user-session native file-send flow. Images currently use generic `File` mode with thumbnails disabled because the live image-specific finalization path returned `INVALID_INPUT`; original bytes and filename are preserved.
 - Unit tests and GitHub Actions security/CI workflows.
 - Local-first state; no paid cloud service is required.
 
@@ -59,7 +59,7 @@ The worker rejects files larger than `TELERUBIK_MAX_FILE_SIZE_MB` before downloa
 
 The Rubika sender combines two inspected reference implementations:
 
-- **Rubpy native normal upload:** `client.send_message(file_inline=<local path>, type=..., file_name=...)` reads, uploads and finalizes the file in one library call. For images, Rubpy requires thumbnail bytes and dimensions; Pillow is installed explicitly because Rubpy treats it as an optional extra and otherwise silently omits that metadata, which Rubika rejects with `INVALID_INPUT`. Transient finalization errors are retried.
+- **Rubpy native normal upload:** `client.send_message(file_inline=<local path>, type=..., file_name=...)` reads, uploads and finalizes the file in one library call. The live image-specific finalization path returned `INVALID_INPUT` even after Pillow was installed, so image extensions are temporarily sent as generic `File` attachments with thumbnails disabled. This preserves the original file bytes and filename but may not display an inline image preview. Video/audio handling remains separate. Transient finalization errors are retried.
 - **TG2RUB-style large-file handling:** files larger than 1.5 GiB are streamed into sequential ZIP archives of at most 500 MiB each, using `ZIP_STORED` to avoid CPU-heavy recompression. Each archive is uploaded and deleted before the next archive is generated, keeping temporary disk use bounded. A JSON manifest records the original filename, part order, sizes and SHA-256 hashes.
 
 ZIP parts are separate Rubika messages; **Rubika does not merge them into one video automatically**. To reconstruct the original file, download all ZIP parts and the manifest into one directory, then run `telerubik.chunks.reassemble(manifest_path, parts_dir, output_path)`. The helper reads each ZIP member in order, validates every part and the full-file SHA-256, and only then publishes the reconstructed file. No manual extraction is required. This is a local reassembly step, not a server-side Rubika feature.
