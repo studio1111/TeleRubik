@@ -26,12 +26,9 @@ jobs:
       TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
       TELEGRAM_SESSION_STRING: ${{ secrets.TELEGRAM_SESSION_STRING }}
       RUBIKA_SESSION_B64: ${{ secrets.RUBIKA_SESSION_B64 }}
-      RUBIKA_SESSION_NAME: ${{ runner.temp }}/telerubik-private/rubika_session
       RUBIKA_DESTINATION_GUID: ${{ secrets.RUBIKA_DESTINATION_GUID }}
       TELERUBIK_MAX_FILE_SIZE_MB: "2048"
       TELERUBIK_DRY_RUN: "false"
-      TELERUBIK_DOWNLOAD_DIR: ${{ runner.temp }}/telerubik-downloads
-      TELERUBIK_STATE_DB: ${{ runner.temp }}/telerubik-data/remote-transfer.sqlite3
     steps:
       - name: Require all credentials without printing values
         shell: bash
@@ -53,11 +50,19 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      - name: Prepare isolated runner temp paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$RUNNER_TEMP/telerubik-private" "$RUNNER_TEMP/telerubik-downloads" "$RUNNER_TEMP/telerubik-data"
+          printf 'RUBIKA_SESSION_NAME=%s\n' "$RUNNER_TEMP/telerubik-private/rubika_session" >> "$GITHUB_ENV"
+          printf 'TELERUBIK_DOWNLOAD_DIR=%s\n' "$RUNNER_TEMP/telerubik-downloads" >> "$GITHUB_ENV"
+          printf 'TELERUBIK_STATE_DB=%s\n' "$RUNNER_TEMP/telerubik-data/remote-transfer.sqlite3" >> "$GITHUB_ENV"
+
       - name: Provision authenticated Rubpy session
         shell: bash
         run: |
           set -euo pipefail
-          install -d -m 700 "$RUNNER_TEMP/telerubik-private"
           printf '%s' "$RUBIKA_SESSION_B64" | base64 --decode > "$RUBIKA_SESSION_NAME.rp"
           chmod 600 "$RUBIKA_SESSION_NAME.rp"
           unset RUBIKA_SESSION_B64
