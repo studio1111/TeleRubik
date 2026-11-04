@@ -197,6 +197,27 @@ class RubikaSenderTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_image_uses_generic_file_mode_without_thumbnail(self):
+        async def scenario():
+            fake_client = make_fake_client()
+            fake_client.send_message = AsyncMock(return_value={"status": "OK", "status_det": "OK"})
+            rubpy_modules = fake_rubpy_modules(fake_client)
+            with patch.dict(sys.modules, rubpy_modules):
+                with patch("telerubik.adapters._validate_authenticated_session"):
+                    with tempfile.TemporaryDirectory() as directory:
+                        path = Path(directory) / "sample.jpg"
+                        path.write_bytes(b"image-bytes")
+                        sender = RubikaSender("session", "destination-guid")
+                        await sender.start()
+                        await sender.send_document(path, "Image caption")
+                        kwargs = fake_client.send_message.await_args.kwargs
+                        self.assertEqual(kwargs["type"], "File")
+                        self.assertFalse(kwargs["thumb"])
+                        self.assertEqual(kwargs["file_name"], "sample.jpg")
+                        await sender.close()
+
+        asyncio.run(scenario())
+
     def test_native_send_does_not_expose_upload_metadata_to_adapter(self):
         async def scenario():
             fake_client = make_fake_client()
