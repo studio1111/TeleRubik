@@ -303,6 +303,10 @@ class SingleTransferTests(unittest.TestCase):
                     download_media=AsyncMock(),
                     disconnect=AsyncMock(),
                 )
+                settings = Settings(**{
+                    **settings_for(directory).__dict__,
+                    "max_file_size_bytes": 20000,
+                })
                 with patch.dict(sys.modules, self._telethon_modules(client)):
                     with patch("telerubik.single_transfer.RubikaSender") as sender_type:
                         sender = sender_type.return_value
@@ -310,7 +314,7 @@ class SingleTransferTests(unittest.TestCase):
                         sender.close = AsyncMock()
                         with self.assertRaisesRegex(RuntimeError, "size does not match"):
                             await transfer_one(
-                                settings_for(directory), "@Animehighbo", 1518, None, "image/jpeg", 17844
+                                settings, "@Animehighbo", 1518, None, "image/jpeg", 17844
                             )
                         sender.start.assert_not_awaited()
                         sender.close.assert_awaited_once()
