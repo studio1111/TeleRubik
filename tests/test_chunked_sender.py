@@ -20,15 +20,15 @@ class ChunkedSenderTests(unittest.TestCase):
                 uploaded_payloads = []
                 maximum_live_parts = 0
 
-                async def upload(filename, file_name):
+                async def send_message(**kwargs):
                     nonlocal maximum_live_parts
+                    filename = kwargs["file_inline"]
                     part_files = list(Path(filename).parent.glob("*.part*"))
                     maximum_live_parts = max(maximum_live_parts, len(part_files))
-                    uploaded_payloads.append((file_name, Path(filename).read_bytes()))
-                    return {"file_id": file_name}
+                    uploaded_payloads.append((kwargs["file_name"], Path(filename).read_bytes()))
+                    return {"status": "OK", "status_det": "OK"}
 
-                client.upload = AsyncMock(side_effect=upload)
-                client.send_message = AsyncMock(return_value={"status": "OK", "status_det": "OK"})
+                client.send_message = AsyncMock(side_effect=send_message)
                 sender = RubikaSender("unused-session", "private-destination")
                 sender.client = client
 
