@@ -195,7 +195,7 @@ class RubikaSender:
             raise RuntimeError("Empty files cannot be uploaded through Rubpy 7.3.5")
 
         suffix = path.suffix.lower()
-        is_image = suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
+        # Rubpy 7.3.5 Image requires thumb_inline; use File for images unless a verified thumbnail pipeline exists.
         media_type = (
             "Video" if suffix in {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".flv"}
             else "Music" if suffix in {".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac"}
