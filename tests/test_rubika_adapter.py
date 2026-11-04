@@ -134,13 +134,13 @@ class RubikaSenderTests(unittest.TestCase):
         self.addCleanup(stack.stop)
         return fake_client
 
-    def test_not_registered_upload_fails_closed_without_register_device_retry(self):
+    def test_native_send_does_not_fall_back_to_legacy_upload(self):
         async def scenario():
             fake_client = make_fake_client()
-            not_registered = type("NotRegistered", (Exception,), {})
-            fake_client.upload = AsyncMock(side_effect=not_registered("NOT_REGISTERED"))
-            fake_client.register_device = AsyncMock()
-            fake_client.send_message = AsyncMock()
+            fake_client.upload = AsyncMock(side_effect=AssertionError("legacy upload must not run"))
+            fake_client.send_message = AsyncMock(
+                return_value={"status": "OK", "status_det": "OK"}
+            )
             rubpy_modules = fake_rubpy_modules(fake_client)
             with patch.dict(sys.modules, rubpy_modules):
                 with patch("telerubik.adapters._validate_authenticated_session"):
@@ -149,14 +149,9 @@ class RubikaSenderTests(unittest.TestCase):
                         path.write_bytes(b"x")
                         sender = RubikaSender("session", "destination")
                         await sender.start()
-                        with self.assertRaisesRegex(
-                            RuntimeError,
-                            "re-authenticated through Rubpy's Rubpy native send flow",
-                        ):
-                            await sender.send_document(path, "caption")
-                        fake_client.upload.assert_awaited_once_with(str(path), file_name="file.bin")
-                        fake_client.register_device.assert_not_awaited()
-                        fake_client.send_message.assert_not_awaited()
+                        await sender.send_document(path, "caption")
+                        fake_client.upload.assert_not_awaited()
+                        fake_client.send_message.assert_awaited_once()
                         await sender.close()
 
         asyncio.run(scenario())
@@ -174,7 +169,7 @@ class RubikaSenderTests(unittest.TestCase):
                         sender = RubikaSender("session", "destination-guid")
                         await sender.start()
                         await sender.send_document(path, "Episode caption")
-                        fake_client.upload.assert_not_awaited()
+                        fake_client.upload.assert_not_called()
                         kwargs = fake_client.send_message.await_args.kwargs
                         self.assertEqual(kwargs["object_guid"], "destination-guid")
                         self.assertEqual(kwargs["text"], "Episode caption")
