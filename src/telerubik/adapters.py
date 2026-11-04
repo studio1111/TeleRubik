@@ -332,3 +332,12 @@ class RubikaSender:
             return await self._send_zip_chunked_document(path, caption)
         return await self._send_single_document(path, caption)
 
+    async def close(self) -> None:
+        if self.client is None:
+            return
+        client, self.client = self.client, None
+        for name in ("disconnect", "close", "stop"):
+            method = getattr(client, name, None)
+            if method is not None:
+                await _resolve(method())
+                break
