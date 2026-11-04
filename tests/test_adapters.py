@@ -150,30 +150,27 @@ class AdapterUploadTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_not_registered_upload_triggers_one_device_registration_then_retries(self):
+    def test_not_registered_upload_fails_without_registering_device_or_sending(self):
         async def scenario():
             with tempfile.TemporaryDirectory() as temporary:
                 source = Path(temporary) / "clip.mkv"
                 source.write_bytes(b"video-data")
                 client = type("FakeClient", (), {})()
-                client.upload = AsyncMock(
-                    side_effect=[NotRegistered("NOT_REGISTERED"), {"file_id": "1", "dc_id": 1}]
-                )
-                client.register_device = AsyncMock(return_value=object())
-                client.send_message = AsyncMock(
-                    return_value={"status": "OK", "status_det": "OK", "message_id": "m1"}
-                )
+                client.upload = AsyncMock(side_effect=NotRegistered("NOT_REGISTERED"))
+                client.register_device = AsyncMock()
+                client.send_message = AsyncMock()
                 sender = RubikaSender("session", "destination")
                 sender.client = client
 
-                await sender._send_single_document(source, "caption")
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "re-authenticated through Rubpy's interactive sign-in flow",
+                ):
+                    await sender._send_single_document(source, "caption")
 
-                client.register_device.assert_awaited_once_with()
-                self.assertEqual(client.upload.await_count, 2)
-                client.send_message.assert_awaited_once()
-                inline = client.send_message.await_args.kwargs["file_inline"]
-                self.assertEqual(inline["type"], "Video")
-                self.assertFalse(inline["is_spoil"])
+                client.register_device.assert_not_awaited()
+                client.upload.assert_awaited_once()
+                client.send_message.assert_not_awaited()
 
         asyncio.run(scenario())
 
