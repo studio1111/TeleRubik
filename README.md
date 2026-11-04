@@ -98,7 +98,7 @@ from rubpy import Client
 from telerubik.adapters import _enable_verified_rubpy_transport, _resolve
 
 async def main():
-    client = Client(name="./private/rubika_session", platform="Android")
+    client = Client(name="./private/rubika_session", platform="PWA")
     try:
         await _resolve(client.connect())
         await _enable_verified_rubpy_transport(client)
