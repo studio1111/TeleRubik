@@ -153,7 +153,7 @@ class AdapterUploadTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_small_image_uses_rubpy_native_file_inline_send_flow(self):
+    def test_small_image_uses_generic_file_payload_without_image_thumbnail(self):
         async def scenario():
             with tempfile.TemporaryDirectory() as temporary:
                 source = Path(temporary) / "telegram-file.jpg"
@@ -172,10 +172,8 @@ class AdapterUploadTests(unittest.TestCase):
                 self.assertEqual(kwargs["object_guid"], "destination")
                 self.assertEqual(kwargs["text"], "image caption")
                 self.assertEqual(kwargs["file_inline"], str(source))
-                # Rubpy's Image path generates the required thumb_inline,
-                # width and height fields before sendMessage finalization.
-                self.assertEqual(kwargs["type"], "Image")
-                self.assertTrue(kwargs["thumb"])
+                self.assertEqual(kwargs["type"], "File")
+                self.assertFalse(kwargs["thumb"])
                 self.assertEqual(kwargs["file_name"], "telegram-file.jpg")
 
         asyncio.run(scenario())
