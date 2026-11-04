@@ -77,8 +77,16 @@ async def transfer_one(
             downloaded = Path(result).resolve()
             if root not in downloaded.parents or not downloaded.is_file():
                 raise RuntimeError("Telegram returned a path outside the isolated transfer directory")
+            # Telethon may append a MIME-derived extension when the Telegram
+            # document has no original filename (for example, "telegram-file"
+            # becomes "telegram-file.jpg"). The returned path is authoritative:
+            # keep it only after the directory-containment and exact-size checks.
+            # Rubika receives the real downloaded filename and extension.
             if downloaded.name != expected:
-                raise RuntimeError("Downloaded filename changed unexpectedly")
+                log.info(
+                    "Telethon normalized download filename: requested=%s actual=%s",
+                    expected, downloaded.name,
+                )
             actual_size = downloaded.stat().st_size
             if actual_size != declared_size or not validate_file_size(
                 actual_size, settings.max_file_size_bytes
