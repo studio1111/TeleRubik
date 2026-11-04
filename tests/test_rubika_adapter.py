@@ -134,6 +134,33 @@ class RubikaSenderTests(unittest.TestCase):
         self.addCleanup(stack.stop)
         return fake_client
 
+    def test_not_registered_upload_fails_closed_without_register_device_retry(self):
+        async def scenario():
+            fake_client = make_fake_client()
+            not_registered = type("NotRegistered", (Exception,), {})
+            fake_client.upload = AsyncMock(side_effect=not_registered("NOT_REGISTERED"))
+            fake_client.register_device = AsyncMock()
+            fake_client.send_message = AsyncMock()
+            rubpy_modules = fake_rubpy_modules(fake_client)
+            with patch.dict(sys.modules, rubpy_modules):
+                with patch("telerubik.adapters._validate_authenticated_session"):
+                    with tempfile.TemporaryDirectory() as directory:
+                        path = Path(directory) / "file.bin"
+                        path.write_bytes(b"x")
+                        sender = RubikaSender("session", "destination")
+                        await sender.start()
+                        with self.assertRaisesRegex(
+                            RuntimeError,
+                            "re-authenticated through Rubpy's interactive sign-in flow",
+                        ):
+                            await sender.send_document(path, "caption")
+                        fake_client.upload.assert_awaited_once_with(str(path), file_name="file.bin")
+                        fake_client.register_device.assert_not_awaited()
+                        fake_client.send_message.assert_not_awaited()
+                        await sender.close()
+
+        asyncio.run(scenario())
+
     def test_upload_then_send_uses_uploaded_file_metadata_and_caption(self):
         async def scenario():
             fake_client = make_fake_client()
