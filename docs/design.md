@@ -22,7 +22,7 @@ Telegram client (Telethon) -> source chat/user filters -> SQLite idempotent queu
 - SQLite is local-first; Supabase is not required and no remote database is provisioned automatically.
 
 ## Known integration risk
-Rubpy changes independently. The adapter targets the pinned user-account Client API: authenticate an existing SQLite session, call `Client.upload(...)`, then pass the returned file metadata to `Client.send_message(file_inline=...)`. Tests validate the adapter contract, session preflight and failure behavior, but they do not prove a real network upload. Keep dry-run enabled until a private-destination end-to-end test confirms text and media delivery.
+Rubpy changes independently. The adapter targets the pinned user-account Client API and delegates upload plus finalization to `Client.send_message(file_inline=<local path>)`. The live image-specific `Image` finalization path returned `INVALID_INPUT` even with Pillow installed, so images currently use generic `File` mode with thumbnails disabled; this preserves bytes and filename but may not provide an inline preview. Tests validate the adapter contract, session preflight and failure behavior, but do not prove a real network upload. Keep general live polling disabled until a private-destination end-to-end test confirms delivery.
 
 
 ## Incremental source scanning
