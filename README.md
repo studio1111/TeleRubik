@@ -12,7 +12,7 @@
 - Monotonic per-source Telegram cursors: a bounded initial import is followed by complete incremental scans after restarts or downtime.
 - SHA-256-verified download cache: failed live uploads retain valid downloads for retry/restart, while successful sends and dry-runs clean them up.
 - Filename normalization, file-size limits, download-path boundary checks and dry-run by default.
-- Rubpy user-session native file-send flow. Images currently use generic `File` mode with thumbnails disabled because the live image-specific finalization path returned `INVALID_INPUT`; original bytes and filename are preserved.
+- Rubpy PWA-profile user-session native file-send flow. Images currently use generic `File` mode with thumbnails disabled because the live image-specific finalization path returned `INVALID_INPUT`; original bytes and filename are preserved.
 - Unit tests and GitHub Actions security/CI workflows.
 - Local-first state; no paid cloud service is required.
 
@@ -20,7 +20,7 @@
 
 - Python 3.11+
 - Telegram API ID/hash from https://my.telegram.org and permission to read configured chats.
-- A pre-authenticated Rubpy **user-account session** and a destination GUID you control.
+- A pre-authenticated Rubpy **PWA-profile user-account session** and a destination GUID you control.
 - `rubpy==7.3.5` and `Pillow==13.0.0` (pinned in project dependencies; Pillow is required by Rubpy 7.3.5 to generate image thumbnail/dimension metadata).
 
 ## Configuration
