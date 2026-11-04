@@ -150,27 +150,27 @@ class AdapterUploadTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_not_registered_upload_fails_without_registering_device_or_sending(self):
+    def test_small_image_uses_rubpy_native_file_inline_send_flow(self):
         async def scenario():
             with tempfile.TemporaryDirectory() as temporary:
-                source = Path(temporary) / "clip.mkv"
-                source.write_bytes(b"video-data")
+                source = Path(temporary) / "telegram-file.jpg"
+                source.write_bytes(b"jpeg-data")
                 client = type("FakeClient", (), {})()
-                client.upload = AsyncMock(side_effect=NotRegistered("NOT_REGISTERED"))
-                client.register_device = AsyncMock()
-                client.send_message = AsyncMock()
+                client.send_message = AsyncMock(
+                    return_value={"status": "OK", "status_det": "OK", "message_id": "m1"}
+                )
                 sender = RubikaSender("session", "destination")
                 sender.client = client
 
-                with self.assertRaisesRegex(
-                    RuntimeError,
-                    "re-authenticated through Rubpy's interactive sign-in flow",
-                ):
-                    await sender._send_single_document(source, "caption")
+                await sender._send_single_document(source, "image caption")
 
-                client.register_device.assert_not_awaited()
-                client.upload.assert_awaited_once()
-                client.send_message.assert_not_awaited()
+                client.send_message.assert_awaited_once()
+                kwargs = client.send_message.await_args.kwargs
+                self.assertEqual(kwargs["object_guid"], "destination")
+                self.assertEqual(kwargs["text"], "image caption")
+                self.assertEqual(kwargs["file_inline"], str(source))
+                self.assertEqual(kwargs["type"], "Image")
+                self.assertEqual(kwargs["file_name"], "telegram-file.jpg")
 
         asyncio.run(scenario())
 
