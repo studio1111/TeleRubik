@@ -197,7 +197,7 @@ class RubikaSenderTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_image_uses_generic_file_mode_without_thumbnail(self):
+    def test_image_uses_native_image_mode_with_thumbnail(self):
         async def scenario():
             fake_client = make_fake_client()
             fake_client.send_message = AsyncMock(return_value={"status": "OK", "status_det": "OK"})
@@ -211,8 +211,8 @@ class RubikaSenderTests(unittest.TestCase):
                         await sender.start()
                         await sender.send_document(path, "Image caption")
                         kwargs = fake_client.send_message.await_args.kwargs
-                        self.assertEqual(kwargs["type"], "File")
-                        self.assertFalse(kwargs["thumb"])
+                        self.assertEqual(kwargs["type"], "Image")
+                        self.assertTrue(kwargs["thumb"])
                         self.assertEqual(kwargs["file_name"], "sample.jpg")
                         await sender.close()
 
