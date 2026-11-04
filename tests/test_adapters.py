@@ -180,7 +180,6 @@ class AdapterUploadTests(unittest.TestCase):
                 source = Path(temporary) / "large.mkv"
                 source.write_bytes(b"0123456789abcdef")
                 client = type("FakeClient", (), {})()
-                client.upload = AsyncMock(side_effect=lambda path, **kwargs: {"file_id": Path(path).name})
                 client.send_message = AsyncMock(
                     return_value={"status": "OK", "status_det": "OK", "message_id": "m1"}
                 )
@@ -194,11 +193,8 @@ class AdapterUploadTests(unittest.TestCase):
 
                 self.assertTrue(result["chunked"])
                 self.assertEqual(result["parts"], 3)
-                self.assertEqual(client.upload.await_count, 4)  # 3 ZIPs + manifest
-                sent_names = [
-                    call.kwargs["file_inline"]["file_id"]
-                    for call in client.send_message.await_args_list
-                ]
+                self.assertEqual(client.send_message.await_count, 4)  # 3 ZIPs + manifest
+                sent_names = [call.kwargs["file_name"] for call in client.send_message.await_args_list]
                 self.assertEqual(len(sent_names), 4)
                 captions = [call.kwargs.get("text") or "" for call in client.send_message.await_args_list]
                 self.assertIn("original caption", captions[0])
