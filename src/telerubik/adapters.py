@@ -182,6 +182,14 @@ class RubikaSender:
         return dict(candidate)
 
     async def _send_single_document(self, path: Path, caption: str) -> Any:
+        """Send through Rubpy's native file_inline path.
+
+        Rubpy 7.3.5 must perform both upload and message finalization in
+        send_message(): it normalizes the uploaded metadata, adds the required
+        media fields, and builds the protocol payload. Splitting upload() and
+        send_message() manually omits version-specific fields and can yield
+        ERROR_GENERIC/INVALID_INPUT even when the upload itself succeeds.
+        """
         if self.client is None:
             raise RuntimeError("Rubika sender has not been started")
         path = Path(path)
@@ -189,69 +197,44 @@ class RubikaSender:
             raise RuntimeError("Upload source file does not exist")
         if path.stat().st_size <= 0:
             raise RuntimeError("Empty files cannot be uploaded through Rubpy 7.3.5")
-        upload_method = getattr(self.client, "upload", None)
-        send_method = getattr(self.client, "send_message", None)
-        if upload_method is None or send_method is None:
-            raise RuntimeError("Installed Rubpy Client lacks upload/send_message; refusing unsafe fallback")
-        try:
-            uploaded = await _resolve(upload_method(str(path), file_name=path.name))
-        except Exception as exc:
-            if type(exc).__name__ == "NotRegistered":
-                # requestSendFile is an authenticated operation. Rubpy's
-                # register_device() is not a login flow; calling it with the
-                # rejected authorization produces INVALID_AUTH and can obscure
-                # the original failure. Never mutate account/device state here.
-                raise RuntimeError(
-                    "Rubika rejected the saved account authorization during file upload "
-                    "(NOT_REGISTERED). The session must be re-authenticated through "
-                    "Rubpy's interactive sign-in flow on the trusted Termux device, "
-                    "then RUBIKA_SESSION_B64 must be refreshed. No file was sent."
-                ) from None
-            raise
 
-        base_inline = self._file_inline(uploaded)
         suffix = path.suffix.lower()
-        preferred_type = (
+        media_type = (
             "Video" if suffix in {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".flv"}
             else "Image" if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
             else "Music" if suffix in {".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac"}
             else "File"
         )
-        variants = [preferred_type] + (["File"] if preferred_type != "File" else [])
+        send_method = getattr(self.client, "send_message", None)
+        if send_method is None:
+            raise RuntimeError("Installed Rubpy Client lacks send_message; refusing unsafe fallback")
+
         last_error: Exception | None = None
-        for inline_type in variants:
-            file_inline = dict(base_inline)
-            file_inline.update({
-                "type": inline_type,
-                "time": 1,
-                "width": 200,
-                "height": 200,
-                "music_performer": "",
-                "is_spoil": False,
-            })
-            for attempt in range(1, 4):
-                try:
-                    result = await _resolve(
-                        send_method(
-                            object_guid=self.destination_guid,
-                            text=caption.strip() or None,
-                            file_inline=file_inline,
-                        )
+        for attempt in range(1, 4):
+            try:
+                result = await _resolve(
+                    send_method(
+                        object_guid=self.destination_guid,
+                        text=caption.strip() or None,
+                        file_inline=str(path),
+                        type=media_type,
+                        file_name=path.name,
                     )
-                    self._validate_send_result(result)
-                    return result
-                except Exception as exc:
-                    last_error = exc
-                    error_text = f"{type(exc).__name__} {exc}".lower()
-                    transient = any(token in error_text for token in (
-                        "timeout", "timed out", "connection reset", "connection aborted",
-                        "temporarily unavailable", "service unavailable", "bad gateway",
-                        "internal_problem", "error_try_again", "500", "502", "503", "504",
-                    ))
-                    if transient and attempt < 3:
-                        await asyncio.sleep(2 * attempt)
-                        continue
-                    break
+                )
+                self._validate_send_result(result)
+                return result
+            except Exception as exc:
+                last_error = exc
+                error_text = f"{type(exc).__name__} {exc}".lower()
+                transient = any(token in error_text for token in (
+                    "timeout", "timed out", "connection reset", "connection aborted",
+                    "temporarily unavailable", "service unavailable", "bad gateway",
+                    "internal_problem", "error_try_again", "500", "502", "503", "504",
+                ))
+                if transient and attempt < 3:
+                    await asyncio.sleep(2 * attempt)
+                    continue
+                raise
         raise last_error if last_error else RuntimeError("Rubika message finalization failed")
 
     @staticmethod
