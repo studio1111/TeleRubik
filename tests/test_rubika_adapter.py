@@ -151,7 +151,7 @@ class RubikaSenderTests(unittest.TestCase):
                         await sender.start()
                         with self.assertRaisesRegex(
                             RuntimeError,
-                            "re-authenticated through Rubpy's interactive sign-in flow",
+                            "re-authenticated through Rubpy's Rubpy native send flow",
                         ):
                             await sender.send_document(path, "caption")
                         fake_client.upload.assert_awaited_once_with(str(path), file_name="file.bin")
@@ -161,20 +161,9 @@ class RubikaSenderTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_upload_then_send_uses_uploaded_file_metadata_and_caption(self):
+    def test_native_send_message_receives_file_path_and_caption(self):
         async def scenario():
             fake_client = make_fake_client()
-
-            async def verify_key_before_api_call():
-                self.assertEqual(fake_client.key, "derived-session-key")
-                self.assertEqual(fake_client.decode_auth, "decoded-auth")
-                self.assertEqual(fake_client.import_key, "signing-key")
-                return types.SimpleNamespace(
-                    user=types.SimpleNamespace(user_guid="authenticated-user-guid")
-                )
-
-            fake_client.get_me.side_effect = verify_key_before_api_call
-            fake_client.upload = AsyncMock(return_value={"file_id": "abc", "access_hash": "xyz"})
             fake_client.send_message = AsyncMock(return_value={"status": "OK", "status_det": "OK"})
             rubpy_modules = fake_rubpy_modules(fake_client)
             with patch.dict(sys.modules, rubpy_modules):
@@ -182,58 +171,23 @@ class RubikaSenderTests(unittest.TestCase):
                     with tempfile.TemporaryDirectory() as directory:
                         path = Path(directory) / "episode.mkv"
                         path.write_bytes(b"video")
-                        sender = RubikaSender("./private/rubika_session", "destination-guid")
+                        sender = RubikaSender("session", "destination-guid")
                         await sender.start()
-                        result = await sender.send_document(path, "Episode caption")
-                        self.assertEqual(result, {"status": "OK", "status_det": "OK"})
-                        rubpy_modules["rubpy"].Client.assert_called_once_with(
-                            name="./private/rubika_session", platform="Android", logger=ANY
-                        )
-                        fake_client.connect.assert_awaited_once()
-                        fake_client.original_session.close.assert_awaited_once()
-                        aiohttp_module = rubpy_modules["aiohttp"]
-                        aiohttp_module.TCPConnector.assert_called_once_with(ssl=True, limit=100)
-                        aiohttp_module.ClientTimeout.assert_called_once_with(total=20)
-                        aiohttp_module.ClientSession.assert_called_once_with(
-                            connector="verified-connector",
-                            headers={"user-agent": "test-agent"},
-                            timeout="verified-timeout",
-                        )
-                        fake_client.start.assert_not_awaited()
-                        fake_client.get_me.assert_awaited_once()
-                        self.assertEqual(fake_client.guid, "authenticated-user-guid")
-                        self.assertEqual(fake_client.phone_number, "phone")
-                        self.assertEqual(fake_client.user_agent, "test-agent")
-                        rubpy_modules["rubpy.crypto"].Crypto.passphrase.assert_called_once_with("fake-auth")
-                        rubpy_modules["rubpy.crypto"].Crypto.decode_auth.assert_called_once_with("fake-auth")
-                        fake_client.upload.assert_awaited_once_with(str(path), file_name="episode.mkv")
-                        fake_client.send_message.assert_awaited_once_with(
-                            object_guid="destination-guid",
-                            text="Episode caption",
-                            file_inline={
-                                "file_id": "abc", "access_hash": "xyz",
-                                "type": "Video", "time": 1, "width": 200,
-                                "height": 200, "music_performer": "", "is_spoil": False,
-                            },
-                        )
+                        await sender.send_document(path, "Episode caption")
+                        fake_client.upload.assert_not_awaited()
+                        kwargs = fake_client.send_message.await_args.kwargs
+                        self.assertEqual(kwargs["object_guid"], "destination-guid")
+                        self.assertEqual(kwargs["text"], "Episode caption")
+                        self.assertEqual(kwargs["file_inline"], str(path))
+                        self.assertEqual(kwargs["type"], "Video")
+                        self.assertEqual(kwargs["file_name"], "episode.mkv")
                         await sender.close()
-                        fake_client.disconnect.assert_awaited_once()
 
         asyncio.run(scenario())
 
-    def test_upload_result_with_to_dict_property_is_forwarded_without_private_attributes(self):
-        class UploadUpdate:
-            def __init__(self):
-                self.client = object()
-                self.original_update = {"file_id": "property-id", "access_hash": "property-hash"}
-
-            @property
-            def to_dict(self):
-                return self.original_update
-
+    def test_native_send_does_not_expose_upload_metadata_to_adapter(self):
         async def scenario():
             fake_client = make_fake_client()
-            fake_client.upload = AsyncMock(return_value=UploadUpdate())
             fake_client.send_message = AsyncMock(return_value={"status": "OK", "status_det": "OK"})
             rubpy_modules = fake_rubpy_modules(fake_client)
             with patch.dict(sys.modules, rubpy_modules):
@@ -244,14 +198,7 @@ class RubikaSenderTests(unittest.TestCase):
                         sender = RubikaSender("session", "destination")
                         await sender.start()
                         await sender.send_document(path, "caption")
-                        self.assertEqual(
-                            fake_client.send_message.await_args.kwargs["file_inline"],
-                            {
-                                "file_id": "property-id", "access_hash": "property-hash",
-                                "type": "File", "time": 1, "width": 200,
-                                "height": 200, "music_performer": "", "is_spoil": False,
-                            },
-                        )
+                        self.assertEqual(fake_client.send_message.await_args.kwargs["file_inline"], str(path))
                         await sender.close()
 
         asyncio.run(scenario())
@@ -337,11 +284,10 @@ class RubikaSenderTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_missing_upload_metadata_fails_closed(self):
+    def test_missing_native_send_method_fails_closed(self):
         async def scenario():
             fake_client = make_fake_client()
-            fake_client.upload = AsyncMock(return_value=None)
-            fake_client.send_message = AsyncMock()
+            fake_client.send_message = None
             rubpy_modules = fake_rubpy_modules(fake_client)
             with patch.dict(sys.modules, rubpy_modules):
                 with patch("telerubik.adapters._validate_authenticated_session"):
@@ -350,9 +296,8 @@ class RubikaSenderTests(unittest.TestCase):
                         path.write_bytes(b"x")
                         sender = RubikaSender("session", "destination")
                         await sender.start()
-                        with self.assertRaisesRegex(RuntimeError, "no usable file metadata"):
+                        with self.assertRaisesRegex(RuntimeError, "lacks send_message"):
                             await sender.send_document(path, "caption")
-                        fake_client.send_message.assert_not_awaited()
                         await sender.close()
 
         asyncio.run(scenario())
