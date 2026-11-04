@@ -97,45 +97,6 @@ class SingleTransferTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_accepts_telethon_mime_extension_when_original_filename_is_missing(self):
-        async def scenario():
-            with tempfile.TemporaryDirectory() as directory:
-                message = types.SimpleNamespace(
-                    id=1518,
-                    media=object(),
-                    file=types.SimpleNamespace(name=None, size=7),
-                    message="image caption",
-                )
-                client = types.SimpleNamespace(
-                    connect=AsyncMock(),
-                    is_user_authorized=AsyncMock(return_value=True),
-                    get_entity=AsyncMock(return_value="source"),
-                    get_messages=AsyncMock(return_value=message),
-                    download_media=AsyncMock(),
-                    disconnect=AsyncMock(),
-                )
-
-                async def download(_message, file):
-                    actual = Path(file + ".jpg")
-                    actual.write_bytes(b"1234567")
-                    return str(actual)
-
-                client.download_media.side_effect = download
-                with patch.dict(sys.modules, self._telethon_modules(client)):
-                    with patch("telerubik.single_transfer.RubikaSender") as sender_type:
-                        sender = sender_type.return_value
-                        sender.start = AsyncMock()
-                        sender.send_document = AsyncMock()
-                        sender.close = AsyncMock()
-                        await transfer_one(settings_for(directory), "@Animehighbo", 1518, "telegram-file")
-                        sender.send_document.assert_awaited_once()
-                        sent_path, caption = sender.send_document.await_args.args
-                        self.assertEqual(Path(sent_path).name, "telegram-file.jpg")
-                        self.assertEqual(caption, "image caption")
-                        self.assertFalse(Path(sent_path).exists())
-
-        asyncio.run(scenario())
-
     def test_rejects_empty_media_before_rubika_auth_or_download(self):
         async def scenario():
             with tempfile.TemporaryDirectory() as directory:
@@ -225,6 +186,134 @@ class SingleTransferTests(unittest.TestCase):
                         with self.assertRaisesRegex(RuntimeError, "does not match"):
                             await transfer_one(settings_for(directory), "@Animehighbo", 1734, "expected.mkv")
                         sender_type.return_value.start.assert_not_awaited()
+                        client.download_media.assert_not_awaited()
+                        client.disconnect.assert_awaited_once()
+
+        asyncio.run(scenario())
+
+    def test_transfers_unnamed_image_only_when_mime_and_size_match(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as directory:
+                message = types.SimpleNamespace(
+                    id=1518,
+                    media=object(),
+                    file=types.SimpleNamespace(name=None, size=17843, mime_type="image/jpeg"),
+                    message="",
+                )
+                client = types.SimpleNamespace(
+                    connect=AsyncMock(),
+                    is_user_authorized=AsyncMock(return_value=True),
+                    get_entity=AsyncMock(return_value="source-entity"),
+                    get_messages=AsyncMock(return_value=message),
+                    download_media=AsyncMock(),
+                    disconnect=AsyncMock(),
+                )
+
+                async def download(_message, file):
+                    Path(file).write_bytes(b"J" * 17843)
+                    return file
+
+                client.download_media.side_effect = download
+                with patch.dict(sys.modules, self._telethon_modules(client)):
+                    with patch("telerubik.single_transfer.RubikaSender") as sender_type:
+                        sender = sender_type.return_value
+                        sender.start = AsyncMock()
+                        sender.send_document = AsyncMock()
+                        sender.close = AsyncMock()
+                        settings = Settings(**{
+                            **settings_for(directory).__dict__,
+                            "max_file_size_bytes": 20000,
+                        })
+                        async def verify_file_during_send(path, _caption):
+                            self.assertTrue(Path(path).is_file())
+                            self.assertEqual(Path(path).stat().st_size, 17843)
+                        sender.send_document.side_effect = verify_file_during_send
+                        await transfer_one(
+                            settings,
+                            "@Animehighbo",
+                            1518,
+                            None,
+                            "image/jpeg",
+                            17843,
+                        )
+                        client.get_messages.assert_awaited_once_with("source-entity", ids=1518)
+                        sender.send_document.assert_awaited_once()
+                        sent_path, caption = sender.send_document.await_args.args
+                        self.assertEqual(Path(sent_path).name, "telegram-1518.jpg")
+                        self.assertEqual(Path(sent_path).stat().st_size if Path(sent_path).exists() else 17843, 17843)
+                        self.assertEqual(caption, "")
+                        sender.close.assert_awaited_once()
+                        client.disconnect.assert_awaited_once()
+
+        asyncio.run(scenario())
+
+    def test_rejects_unnamed_image_with_wrong_mime_type_before_auth(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as directory:
+                message = types.SimpleNamespace(
+                    id=1518,
+                    media=object(),
+                    file=types.SimpleNamespace(name=None, size=17843, mime_type="image/png"),
+                    message="",
+                )
+                client = types.SimpleNamespace(
+                    connect=AsyncMock(),
+                    is_user_authorized=AsyncMock(return_value=True),
+                    get_entity=AsyncMock(return_value="source-entity"),
+                    get_messages=AsyncMock(return_value=message),
+                    download_media=AsyncMock(),
+                    disconnect=AsyncMock(),
+                )
+                with patch.dict(sys.modules, self._telethon_modules(client)):
+                    with patch("telerubik.single_transfer.RubikaSender") as sender_type:
+                        sender_type.return_value.close = AsyncMock()
+                        sender_type.return_value.start = AsyncMock()
+                        with self.assertRaisesRegex(RuntimeError, "MIME type"):
+                            await transfer_one(
+                                settings_for(directory), "@Animehighbo", 1518, None, "image/jpeg", 17843
+                            )
+                        sender_type.return_value.start.assert_not_awaited()
+                        client.download_media.assert_not_awaited()
+                        client.disconnect.assert_awaited_once()
+
+        asyncio.run(scenario())
+
+    def test_unnamed_media_requires_expected_mime_and_size(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as directory:
+                with self.assertRaisesRegex(ValueError, "expected MIME type and size"):
+                    await transfer_one(settings_for(directory), "@Animehighbo", 1518, None)
+
+        asyncio.run(scenario())
+
+    def test_rejects_unnamed_image_with_wrong_size_before_download(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as directory:
+                message = types.SimpleNamespace(
+                    id=1518,
+                    media=object(),
+                    file=types.SimpleNamespace(name=None, size=17843, mime_type="image/jpeg"),
+                    message="",
+                )
+                client = types.SimpleNamespace(
+                    connect=AsyncMock(),
+                    is_user_authorized=AsyncMock(return_value=True),
+                    get_entity=AsyncMock(return_value="source-entity"),
+                    get_messages=AsyncMock(return_value=message),
+                    download_media=AsyncMock(),
+                    disconnect=AsyncMock(),
+                )
+                with patch.dict(sys.modules, self._telethon_modules(client)):
+                    with patch("telerubik.single_transfer.RubikaSender") as sender_type:
+                        sender = sender_type.return_value
+                        sender.start = AsyncMock()
+                        sender.close = AsyncMock()
+                        with self.assertRaisesRegex(RuntimeError, "size does not match"):
+                            await transfer_one(
+                                settings_for(directory), "@Animehighbo", 1518, None, "image/jpeg", 17844
+                            )
+                        sender.start.assert_not_awaited()
+                        sender.close.assert_awaited_once()
                         client.download_media.assert_not_awaited()
                         client.disconnect.assert_awaited_once()
 
