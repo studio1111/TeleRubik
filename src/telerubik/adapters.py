@@ -185,14 +185,7 @@ class RubikaSender:
         return dict(candidate)
 
     async def _send_single_document(self, path: Path, caption: str) -> Any:
-        """Send through Rubpy's native file_inline path.
-
-        Rubpy 7.3.5 must perform both upload and message finalization in
-        send_message(): it normalizes the uploaded metadata, adds the required
-        media fields, and builds the protocol payload. Splitting upload() and
-        send_message() manually omits version-specific fields and can yield
-        ERROR_GENERIC/INVALID_INPUT even when the upload itself succeeds.
-        """
+        """Send through Rubpy's native file_inline path."""
         if self.client is None:
             raise RuntimeError("Rubika sender has not been started")
         path = Path(path)
@@ -205,7 +198,6 @@ class RubikaSender:
         is_image = suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
         media_type = (
             "Video" if suffix in {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".flv"}
-            else "Image" if is_image
             else "Music" if suffix in {".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac"}
             else "File"
         )
@@ -222,7 +214,7 @@ class RubikaSender:
                         text=caption.strip() or None,
                         file_inline=str(path),
                         type=media_type,
-                        thumb=is_image or media_type == "Video",
+                        thumb=media_type == "Video",
                         file_name=path.name,
                     )
                 )
@@ -285,13 +277,13 @@ class RubikaSender:
                     manifest_path = part_dir / f"{path.name}.manifest.json"
                     with manifest_path.open("x", encoding="utf-8") as output:
                         json.dump(manifest_data, output, ensure_ascii=False, indent=2)
-                        output.write("\\n")
+                        output.write("\n")
                         output.flush()
                         os.fsync(output.fileno())
                     manifest_caption = (
-                        f"ZIP PART MANIFEST: {path.name}\\n"
-                        f"Parts: {total_parts} | Original bytes: {manifest_data['total_bytes']}\\n"
-                        f"Full-file SHA-256: {manifest_data['sha256']}\\n"
+                        f"ZIP PART MANIFEST: {path.name}\n"
+                        f"Parts: {total_parts} | Original bytes: {manifest_data['total_bytes']}\n"
+                        f"Full-file SHA-256: {manifest_data['sha256']}\n"
                         "Download every ZIP part and this manifest into one directory. "
                         "Run the built-in reassembly helper; it reads the ZIP members in order and verifies SHA-256."
                     )
@@ -301,10 +293,10 @@ class RubikaSender:
                 archive_path = Path(item["archive_path"])
                 index = int(item["index"])
                 part_caption = (
-                    (caption.strip() + "\\n\\n") if index == 1 and caption.strip() else ""
+                    (caption.strip() + "\n\n") if index == 1 and caption.strip() else ""
                 ) + (
-                    f"{path.name} | PART {index:03d}/{total_parts:03d} (ZIP)\\n"
-                    f"Original bytes: {item['size_bytes']} | SHA-256: {item['sha256']}\\n"
+                    f"{path.name} | PART {index:03d}/{total_parts:03d} (ZIP)\n"
+                    f"Original bytes: {item['size_bytes']} | SHA-256: {item['sha256']}\n"
                     "Extract this ZIP; join the numbered .part files in order."
                 )
                 await self._send_single_document(archive_path, part_caption)
@@ -338,15 +330,5 @@ class RubikaSender:
             raise RuntimeError("Upload source file does not exist")
         if path.stat().st_size > LARGE_FILE_SPLIT_THRESHOLD:
             return await self._send_zip_chunked_document(path, caption)
-        # Walrus-style upload-then-send keeps ordinary files as one Rubika document.
         return await self._send_single_document(path, caption)
 
-    async def close(self) -> None:
-        if self.client is None:
-            return
-        client, self.client = self.client, None
-        for name in ("disconnect", "close", "stop"):
-            method = getattr(client, name, None)
-            if method is not None:
-                await _resolve(method())
-                break
