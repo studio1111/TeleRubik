@@ -169,7 +169,8 @@ class AdapterUploadTests(unittest.TestCase):
                 self.assertEqual(kwargs["object_guid"], "destination")
                 self.assertEqual(kwargs["text"], "image caption")
                 self.assertEqual(kwargs["file_inline"], str(source))
-                self.assertEqual(kwargs["type"], "Image")
+                self.assertEqual(kwargs["type"], "File")
+                self.assertFalse(kwargs["thumb"])
                 self.assertEqual(kwargs["file_name"], "telegram-file.jpg")
 
         asyncio.run(scenario())
