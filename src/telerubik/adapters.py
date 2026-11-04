@@ -196,16 +196,18 @@ class RubikaSender:
         try:
             uploaded = await _resolve(upload_method(str(path), file_name=path.name))
         except Exception as exc:
-            # Match Rubpy's own sign-in recovery path, but do not register a new
-            # device on every run. Only do it when requestSendFile explicitly says
-            # NOT_REGISTERED, then retry that upload exactly once.
-            if type(exc).__name__ != "NotRegistered":
-                raise
-            register = getattr(self.client, "register_device", None)
-            if not callable(register):
-                raise RuntimeError("Rubika rejected the upload as NOT_REGISTERED and this Rubpy client cannot register") from None
-            await _resolve(register())
-            uploaded = await _resolve(upload_method(str(path), file_name=path.name))
+            if type(exc).__name__ == "NotRegistered":
+                # requestSendFile is an authenticated operation. Rubpy's
+                # register_device() is not a login flow; calling it with the
+                # rejected authorization produces INVALID_AUTH and can obscure
+                # the original failure. Never mutate account/device state here.
+                raise RuntimeError(
+                    "Rubika rejected the saved account authorization during file upload "
+                    "(NOT_REGISTERED). The session must be re-authenticated through "
+                    "Rubpy's interactive sign-in flow on the trusted Termux device, "
+                    "then RUBIKA_SESSION_B64 must be refreshed. No file was sent."
+                ) from None
+            raise
 
         base_inline = self._file_inline(uploaded)
         suffix = path.suffix.lower()
