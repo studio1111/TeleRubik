@@ -202,13 +202,10 @@ class RubikaSender:
             raise RuntimeError("Empty files cannot be uploaded through Rubpy 7.3.5")
 
         suffix = path.suffix.lower()
-        # Live Rubpy 7.3.5 image finalization remains rejected by Rubika even
-        # with Pillow installed. Use generic file mode for images until the
-        # image-specific payload is independently validated.
         is_image = suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
         media_type = (
             "Video" if suffix in {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".flv"}
-            else "File" if is_image
+            else "Image" if is_image
             else "Music" if suffix in {".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac"}
             else "File"
         )
@@ -225,7 +222,7 @@ class RubikaSender:
                         text=caption.strip() or None,
                         file_inline=str(path),
                         type=media_type,
-                        thumb=not is_image,
+                        thumb=is_image or media_type == "Video",
                         file_name=path.name,
                     )
                 )
