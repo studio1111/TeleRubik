@@ -55,7 +55,7 @@ jobs:
       - name: Scan @Animehighbo and create JSON/CSV reports
         run: python -m scripts.telegram_inventory
       - name: Upload inventory reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: telegram-file-inventory-${{ github.run_number }}
           path: |
