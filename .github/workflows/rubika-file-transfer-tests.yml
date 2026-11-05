@@ -45,7 +45,7 @@ jobs:
         run: python scripts/run_transfer_tests.py
       - name: Upload sanitized test report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rubika-transfer-test-${{ github.run_number }}
           path: transfer-test-report.json
